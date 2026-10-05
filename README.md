@@ -31,15 +31,7 @@ pip install -r requirements.txt
 
 Tested with Python 3.14 and the versions pinned in `requirements.txt`.
 
-### Data
-
-1. Connect to the IDX FTP server with FileZilla (credentials come from your onboarding docs; they are
-   confidential, so never put them in this repo). The FTP server is **download only**. Never upload or delete anything there.
-2. From `raw/California`, download the `CRMLSSold*.csv` files (at least 6 months; more months let the
-   training-window search try longer windows) into `data/raw/`.
-3. Optionally download `resources/Trestle Property MetaData.pdf` for column definitions.
-
-Record which files you used (the data snapshot). `split_metadata.json` lists them automatically.
+The pipeline reads monthly `CRMLSSold*.csv` files from `data/raw/` (git-ignored). `split_metadata.json` records which files were used.
 
 ## Run
 

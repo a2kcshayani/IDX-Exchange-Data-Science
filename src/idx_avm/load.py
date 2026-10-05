@@ -12,8 +12,7 @@ def list_raw_files(raw_dir: Path = config.RAW_DIR) -> list[Path]:
     files = sorted(Path(raw_dir).glob(config.RAW_GLOB))
     if not files:
         raise FileNotFoundError(
-            f"No {config.RAW_GLOB} files in {raw_dir}. Download them from the FTP "
-            "server (raw/California) with FileZilla and place them there."
+            f"No {config.RAW_GLOB} files in {raw_dir}. Place the monthly CRMLSSold CSVs there."
         )
     return files
 

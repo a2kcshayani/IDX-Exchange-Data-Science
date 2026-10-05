@@ -2,7 +2,7 @@
 
 Source: CRMLS (California Regional MLS) sold-listing extracts, `CRMLSSold*.csv`, one file per month,
 delivered through the Trestle (RESO Data Dictionary) feed. Definitions below follow the RESO standard;
-check each against `resources/Trestle Property MetaData.pdf` on the FTP server and fix anything that differs.
+check each against the Trestle Property MetaData document and fix anything that differs.
 
 **Role** column:
 - **target** = what we predict
