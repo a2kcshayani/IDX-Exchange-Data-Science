@@ -1,0 +1,20 @@
+# Data never goes in the repo
+data/
+*.csv
+*.xlsx
+*.parquet
+*.zip
+crmls_sold.py
+
+# Environment
+.venv/
+venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.pytest_cache/
+.DS_Store
+
+# Model artifacts
+*.joblib
+*.pkl
