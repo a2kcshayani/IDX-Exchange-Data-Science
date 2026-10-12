@@ -37,3 +37,17 @@ def filter_single_family(df: pd.DataFrame) -> pd.DataFrame:
         df["PropertySubType"] == config.PROPERTY_SUBTYPE
     )
     return df.loc[mask].copy()
+
+
+def load_processed(name: str, processed_dir: Path = config.PROCESSED_DIR) -> pd.DataFrame:
+    """Read a cleaned split written by the Week 3 pipeline, keeping ZIP codes as 5-digit strings."""
+    df = pd.read_csv(
+        Path(processed_dir) / f"{name}_clean.csv",
+        dtype={"PostalCode": "string", "City": "string", "CountyOrParish": "string"},
+        parse_dates=[config.DATE_COL],
+        low_memory=False,
+    )
+    # Older extracts may have written ZIPs as floats ("91762.0").
+    df["PostalCode"] = df["PostalCode"].str.extract(r"(\d{5})", expand=False)
+    df["CloseMonth"] = df[config.DATE_COL].dt.to_period("M")
+    return df

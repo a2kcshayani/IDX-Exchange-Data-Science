@@ -41,7 +41,8 @@ def add_base_features(df: pd.DataFrame) -> pd.DataFrame:
 
 def feature_columns(df: pd.DataFrame) -> dict[str, list[str]]:
     """Return the whitelisted feature groups that actually exist in df."""
-    present = set(df.columns)
+    # Columns that are entirely empty carry no information (and break median imputation).
+    present = {c for c in df.columns if df[c].notna().any()}
     groups = {
         "numeric": [c for c in config.NUMERIC_FEATURES + config.ENGINEERED_NUMERIC if c in present],
         "boolean": [c for c in config.BOOLEAN_FEATURES if c in present],
@@ -72,6 +73,7 @@ def leakage_report(df: pd.DataFrame) -> pd.DataFrame:
             continue
         corr = np.nan
         if pd.api.types.is_numeric_dtype(df[col]):
-            corr = df[[col, config.TARGET]].corr().iloc[0, 1]
-        rows.append({"column": col, "corr_with_ClosePrice": corr, "verdict": "exclude"})
+            # Spearman: robust to the raw data-entry outliers that swamp Pearson correlation.
+            corr = df[[col, config.TARGET]].corr(method="spearman").iloc[0, 1]
+        rows.append({"column": col, "spearman_corr_with_ClosePrice": corr, "verdict": "exclude"})
     return pd.DataFrame(rows)

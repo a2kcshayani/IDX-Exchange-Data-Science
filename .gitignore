@@ -18,3 +18,5 @@ __pycache__/
 # Model artifacts
 *.joblib
 *.pkl
+models/
+.claude/

@@ -57,3 +57,27 @@ def test_window_tuning_never_uses_test_month(data):
     results, summary = tune_training_window(df, months, [1, 2, 3], n_origins=2)
     assert str(months[-1]) not in set(results["val_month"])
     assert summary["MdAPE"].notna().all()
+
+
+def test_quantile_clipper_learns_bounds_from_train_only():
+    import numpy as np
+    from idx_avm.preprocess import QuantileClipper
+
+    train = np.array([[float(v)] for v in range(1, 1001)])
+    clipper = QuantileClipper().fit(train)
+    out = clipper.transform(np.array([[-1e9], [500.0], [2.49e10]]))
+    assert out[0, 0] == clipper.lower_[0] and out[2, 0] == clipper.upper_[0]
+    assert out[1, 0] == 500.0
+
+
+def test_baseline_runs_and_beats_naive_median(data):
+    import numpy as np
+    from idx_avm.baseline import run_baseline
+
+    df, _ = data
+    months = complete_months(df)
+    result = run_baseline(df, months[-1], 3)
+    test = result.test
+    naive = np.median(np.abs(test["ClosePrice"].median() - test["ClosePrice"]) / test["ClosePrice"]) * 100
+    assert result.metrics["MdAPE"] < naive
+    assert {"MdAPE", "MAPE", "R2", "MAE", "RMSE"} <= result.metrics.keys()

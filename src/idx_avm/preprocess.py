@@ -6,6 +6,7 @@ statistic is learned and .transform() is all that touches test rows.
 """
 import numpy as np
 import pandas as pd
+from sklearn.base import BaseEstimator, OneToOneFeatureMixin, TransformerMixin
 from sklearn.compose import ColumnTransformer, TransformedTargetRegressor
 from sklearn.impute import SimpleImputer
 from sklearn.model_selection import KFold
@@ -21,8 +22,32 @@ def _as_object(X):
     return X.where(X.notna(), np.nan)
 
 
-def build_preprocessor(groups: dict[str, list[str]], scale: bool = True) -> ColumnTransformer:
-    numeric_steps = [SimpleImputer(strategy="median", add_indicator=True)]
+class QuantileClipper(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
+    """Clip each numeric column to percentiles learned on the training rows.
+
+    The raw MLS fields contain entry errors (e.g. a 24.9-billion sq ft lot,
+    500 garage spaces) that a linear model extrapolates into absurd prices.
+    Bounds are fit on train only and frozen, like every other learned step.
+    """
+
+    def __init__(self, lower: float = config.PRICE_LOWER_Q, upper: float = config.PRICE_UPPER_Q):
+        self.lower = lower
+        self.upper = upper
+
+    def fit(self, X, y=None):
+        X = np.asarray(X, dtype=float)
+        self.n_features_in_ = X.shape[1]
+        self.lower_ = np.nanquantile(X, self.lower, axis=0)
+        self.upper_ = np.nanquantile(X, self.upper, axis=0)
+        return self
+
+    def transform(self, X):
+        return np.clip(np.asarray(X, dtype=float), self.lower_, self.upper_)
+
+
+def build_preprocessor(groups: dict[str, list[str]], scale: bool = True, clip_features: bool = True) -> ColumnTransformer:
+    numeric_steps = [QuantileClipper()] if clip_features else []
+    numeric_steps.append(SimpleImputer(strategy="median", add_indicator=True))
     if scale:
         numeric_steps.append(StandardScaler())
     to_obj = FunctionTransformer(_as_object, feature_names_out="one-to-one")
@@ -58,9 +83,11 @@ def build_preprocessor(groups: dict[str, list[str]], scale: bool = True) -> Colu
     return ColumnTransformer(transformers, remainder="drop", verbose_feature_names_out=True)
 
 
-def build_model_pipeline(groups: dict[str, list[str]], regressor, scale: bool = True, log_target: bool = True):
+def build_model_pipeline(
+    groups: dict[str, list[str]], regressor, scale: bool = True, log_target: bool = True, clip_features: bool = True
+):
     """Preprocessor + regressor, optionally trained on log(ClosePrice)."""
-    pipe = Pipeline([("pre", build_preprocessor(groups, scale=scale)), ("model", regressor)])
+    pipe = Pipeline([("pre", build_preprocessor(groups, scale=scale, clip_features=clip_features)), ("model", regressor)])
     if log_target:
         return TransformedTargetRegressor(regressor=pipe, func=np.log, inverse_func=np.exp)
     return pipe
