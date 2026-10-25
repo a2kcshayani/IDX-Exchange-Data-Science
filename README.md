@@ -21,7 +21,9 @@ See [docs/data_dictionary.md](docs/data_dictionary.md).
 | 3 | Preprocessing + train/test split | [notebooks/02_preprocessing.ipynb](notebooks/02_preprocessing.ipynb), `data/processed/*_clean.csv` | ✅ notebook built; run on real data |
 | 4 | Linear Regression baseline | [notebooks/03_baseline_model.ipynb](notebooks/03_baseline_model.ipynb), [scripts/run_baseline.py](scripts/run_baseline.py) | ✅ run on real data, results below |
 | — | Presentation app (Streamlit) | [app/app.py](app/app.py) | ✅ |
-| 5+ | Tree models, feature engineering, boosting, evaluation | — | upcoming |
+| 5 | Decision Tree + Random Forest vs. baseline | [notebooks/04_model_comparison.ipynb](notebooks/04_model_comparison.ipynb), [scripts/run_models.py](scripts/run_models.py) | ✅ run on real data, results below |
+| 6 | Feature engineering incl. school-district spatial join | [notebooks/04b_feature_engineering.ipynb](notebooks/04b_feature_engineering.ipynb), [src/idx_avm/geo.py](src/idx_avm/geo.py) | ✅ run on real data, results below |
+| 7+ | Gradient boosting, evaluation expansion, docs, presentation | — | upcoming |
 
 ## Setup
 
@@ -35,6 +37,13 @@ Tested with Python 3.14 and the versions pinned in `requirements.txt`.
 
 The pipeline reads monthly `CRMLSSold*.csv` files from `data/raw/` (git-ignored). `split_metadata.json` records which files were used.
 
+Week 6 also needs the public [CA School District Areas 2024-25](https://data.ca.gov/dataset/california-school-district-areas-2024-25) boundaries (CA Dept. of Education, ~45 MB GeoJSON):
+
+```bash
+mkdir -p data/external && curl -L -o data/external/school_districts_2425.geojson \
+  "https://gis.data.ca.gov/api/download/v1/items/b0e3b936426a47ce9d9a2e77e2bb86cc/geojson?layers=0"
+```
+
 ## Run
 
 ```bash
@@ -43,6 +52,9 @@ python scripts/run_preprocessing.py
 
 # Week 4 baseline: train, evaluate, backtest, save model to models/ (git-ignored)
 python scripts/run_baseline.py
+
+# Weeks 5-6: tune tree models, compare feature sets, save the selected model (~10 min)
+python scripts/run_models.py
 
 # Presentation app (reads data/processed/ and models/)
 streamlit run app/app.py
@@ -61,6 +73,8 @@ Outputs in `data/processed/`:
 | `window_tuning_by_origin.csv`, `window_tuning_summary.csv` | Validation scores for each training-window length X |
 | `split_metadata.json` | Source files, train/test months, chosen X, outlier cutoffs, feature groups |
 | `baseline_metrics.json`, `baseline_*.csv` | Week 4 test metrics, before/after comparison, backtest, error by price band and county |
+| `week5_*.csv`, `week6_feature_sets.csv` | Tuning trials, model comparison, every model × feature set (validation and test) |
+| `best_model_*.csv`, `best_model_metrics.json`, `rf_feature_importance.csv` | Selected model's metrics, backtest, error breakdowns, importances |
 
 Tests (these use synthetic CRMLS-shaped data, so they run without the real files):
 
@@ -91,18 +105,62 @@ Linear Regression on `log(ClosePrice)`. It trains on the 18 months Oct 2024 – 
 - **Leakage check:** `ListPrice` has a Spearman correlation of 0.993 with `ClosePrice`, and `OriginalListPrice` 0.986. That's why
   they are excluded: they'd inflate accuracy, and they don't exist for off-market homes.
 
+## Week 5 results: tree models vs. the baseline
+
+Same features, same pipeline, same log target. Settings tuned on the **validation month (Mar 2026)**, then scored once on
+the **test month (Apr 2026)**, 12,337 sales.
+
+| Model | Chosen settings | MdAPE | MAPE | R² | MAE | Train time |
+|---|---|---|---|---|---|---|
+| Linear Regression (baseline) | — | 11.11% | 15.57% | 0.811 | $212,780 | 1 s |
+| Decision Tree | depth 20, min leaf 20 | 9.55% | 14.07% | 0.847 | $192,747 | 3 s |
+| **Random Forest** | 150 trees, min leaf 2, 33% of features per split | **7.78%** | **11.65%** | **0.885** | **$161,694** | 14 s |
+
+- The Random Forest cuts typical error by **3.3 points (30%)** versus the baseline. That margin is far larger than the
+  month-to-month noise seen in the backtests (about 0.2 points).
+- Trees win because they learn interactions on their own, like "big house × expensive ZIP", which a linear model can't.
+- A single Decision Tree is jumpy (high variance). Averaging 150 de-correlated trees fixes most of that.
+
+## Week 6 results: feature engineering
+
+Four cumulative feature sets, each re-trained with all three models (test-month MdAPE):
+
+| Feature set | Linear Regression | Decision Tree | Random Forest |
+|---|---|---|---|
+| Base (Week 4) | 11.11% | 9.55% | 7.78% |
+| + Bed/bath and lot/living ratios | 11.12% | 9.63% | 7.82% |
+| + School districts (spatial join) | 11.14% | 9.70% | 7.81% |
+| + Comp PPSF from prior sales | **9.88%** | 9.58% | 7.85% |
+
+- **School districts:** a spatial join of each home's coordinates against the CA School District Areas 2024-25 polygons
+  matched **99.3%** of homes (the rest have no coordinates) to 469 K-8 and 321 high-school districts.
+- **Comp PPSF:** each ZIP's median price per sq ft from training-window sales, cross-fitted so no home sees its own price
+  (`CompPPSFEncoder`). It's the leakage-safe replacement for PPSF computed from ClosePrice.
+- **What helped:** comps improved the linear model a lot (11.11% → 9.88%, R² 0.811 → 0.843). For the tree models, the
+  changes are within noise (±0.1 points). Trees were already learning neighborhood price levels from ZIP and city, and the
+  importances confirm the overlap: the comps value, ZIP, and city carry about 69% of the Random Forest's importance.
+- **Selected model** (by validation MdAPE): Random Forest + school districts, at **7.81% MdAPE, R² 0.885** on the test
+  month. On validation it is effectively tied with the base Random Forest (0.03 points apart).
+- **Backtest of the selected model:** MdAPE 7.92% / 7.69% / 7.81% for Feb / Mar / Apr 2026.
+- **Accuracy bands:** 34.7% of homes within 5% of the sale price (baseline: 24.4%), **59.8% within 10%** (45.7%), and 84.0% within 20% (74.4%).
+- **Luxury homes improved the most:** MdAPE on $1.67M+ homes fell from 16.4% to 11.8%, and on $575K–$800K homes from 9.1% to 6.0%.
+- **Excluded on purpose:** the district file's demographic fields (race/ethnicity shares). Pricing homes on neighborhood
+  demographic composition raises fair-housing concerns, so only district identity is used.
+
 ## Presentation app
 
-`streamlit run app/app.py` opens a 6-page app:
+`streamlit run app/app.py` opens an 8-page app:
 
 1. Overview
 2. Data & cleaning: a data funnel, the cleaning log, and EDA charts
 3. Train/test design: the time split, window tuning, and the leakage audit
 4. Baseline results: metrics, before/after comparison, backtest, and error by price band and county
-5. Price estimator: enter a home's details to get a predicted price with its typical range
-6. What's next
+5. Model comparison (Week 5): tree models vs. baseline, tuning trials, strengths and weaknesses
+6. Feature engineering (Week 6): every feature set × model, old vs. new table, importances, school-district prices
+7. Price estimator: the selected Random Forest, with automatic school-district lookup from the ZIP code
+8. What's next
 
-It reads only local, git-ignored outputs, so run the two scripts above first.
+It reads only local, git-ignored outputs, so run the three scripts above first. The saved Random Forest is about 350 MB and takes around 15 seconds to load the first time.
 
 ## Methodology (Weeks 1–3)
 
@@ -142,10 +200,10 @@ frozen cutoffs are then applied to the test set.
 ## Layout
 
 ```
-src/idx_avm/        config, load, clean, features, split, preprocess, window, metrics, pipeline, baseline
-scripts/            run_preprocessing.py, run_baseline.py
+src/idx_avm/        config, load, clean, features, split, preprocess, window, metrics, pipeline, baseline, models, geo
+scripts/            run_preprocessing.py, run_baseline.py, run_models.py
 app/                app.py (Streamlit presentation + price estimator)
-notebooks/          01_exploration.ipynb, 02_preprocessing.ipynb, 03_baseline_model.ipynb
+notebooks/          01_exploration … 03_baseline_model, 04_model_comparison, 04b_feature_engineering
 docs/               data_dictionary.md
 tests/              synthetic data generator + pipeline tests
 data/, models/      (git-ignored) raw data, processed outputs, saved model

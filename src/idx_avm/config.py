@@ -96,5 +96,10 @@ HIGH_CARD_CATEGORICAL = ["City", "PostalCode"]
 # Engineered in features.add_base_features().
 ENGINEERED_NUMERIC = ["PropertyAge", "CloseMonthSin", "CloseMonthCos"]
 
+# Week 6 feature additions (see features.feature_columns flags).
+RATIO_FEATURES = ["BedBathRatio", "LotToLivingRatio"]          # features.add_ratio_features()
+SCHOOL_FEATURES = ["SchoolDistrictK8", "SchoolDistrictHigh"]   # geo.assign_school_districts()
+COMP_INPUTS = ["PostalCode", "LivingArea"]                     # preprocess.CompPPSFEncoder
+
 # Columns used for de-duplication / identity, never as features.
 ID_COLUMNS = ["ListingKey", "ListingId", "UnparsedAddress", "ParcelNumber"]

@@ -39,16 +39,37 @@ def add_base_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def feature_columns(df: pd.DataFrame) -> dict[str, list[str]]:
-    """Return the whitelisted feature groups that actually exist in df."""
+def add_ratio_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Week 6 row-wise ratios. Zero/missing denominators give NaN (imputed later)."""
+    df = df.copy()
+    baths = df["BathroomsTotalInteger"].where(df["BathroomsTotalInteger"] > 0)
+    df["BedBathRatio"] = df["BedroomsTotal"] / baths
+    sqft = df["LivingArea"].where(df["LivingArea"] > 0)
+    df["LotToLivingRatio"] = df["LotSizeSquareFeet"] / sqft
+    return df
+
+
+def feature_columns(
+    df: pd.DataFrame, ratios: bool = False, school: bool = False, comps: bool = False
+) -> dict[str, list[str]]:
+    """Return the whitelisted feature groups that actually exist in df.
+
+    The flags switch on the Week 6 additions so feature sets can be compared:
+    ratios (bed/bath, lot/living), school (district spatial join), and comps
+    (train-fit ZIP price-per-sq-ft from prior sales, see CompPPSFEncoder).
+    """
     # Columns that are entirely empty carry no information (and break median imputation).
     present = {c for c in df.columns if df[c].notna().any()}
+    numeric = config.NUMERIC_FEATURES + config.ENGINEERED_NUMERIC + (config.RATIO_FEATURES if ratios else [])
+    high_card = config.HIGH_CARD_CATEGORICAL + (config.SCHOOL_FEATURES if school else [])
     groups = {
-        "numeric": [c for c in config.NUMERIC_FEATURES + config.ENGINEERED_NUMERIC if c in present],
+        "numeric": [c for c in numeric if c in present],
         "boolean": [c for c in config.BOOLEAN_FEATURES if c in present],
         "low_card": [c for c in config.LOW_CARD_CATEGORICAL if c in present],
-        "high_card": [c for c in config.HIGH_CARD_CATEGORICAL if c in present],
+        "high_card": [c for c in high_card if c in present],
     }
+    if comps:
+        groups["comp"] = [c for c in config.COMP_INPUTS if c in present]
     audit_features([c for cols in groups.values() for c in cols])
     return groups
 

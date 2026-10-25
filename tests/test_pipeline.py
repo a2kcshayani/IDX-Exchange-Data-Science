@@ -81,3 +81,50 @@ def test_baseline_runs_and_beats_naive_median(data):
     naive = np.median(np.abs(test["ClosePrice"].median() - test["ClosePrice"]) / test["ClosePrice"]) * 100
     assert result.metrics["MdAPE"] < naive
     assert {"MdAPE", "MAPE", "R2", "MAE", "RMSE"} <= result.metrics.keys()
+
+
+def test_comp_ppsf_encoder_cross_fits_and_handles_unseen_zips():
+    import numpy as np
+    import pandas as pd
+    from idx_avm.preprocess import CompPPSFEncoder
+
+    X = pd.DataFrame({"PostalCode": ["90001"] * 50 + ["94301"] * 50, "LivingArea": [1000.0] * 100})
+    y = np.log(np.r_[np.full(50, 500_000.0), np.full(50, 2_000_000.0)])
+    enc = CompPPSFEncoder(smoothing=0)
+    train_out = enc.fit_transform(X, y)
+    # Expensive ZIP gets a higher comp PPSF than the cheap one.
+    assert train_out[50:, 0].mean() > train_out[:50, 0].mean()
+    new = enc.transform(pd.DataFrame({"PostalCode": ["90001", "00000"], "LivingArea": [2000.0, np.nan]}))
+    assert np.isclose(new[0, 0], np.log(500.0))
+    assert np.isclose(new[1, 0], enc.prior_)          # unseen ZIP -> overall median
+    # Square footage is clipped to the training range (all 1,000 sq ft here) before computing comp value.
+    assert np.isclose(new[0, 1], np.log(500.0) + np.log(1000.0))
+
+
+def test_week6_feature_flags_add_columns(data):
+    from idx_avm.features import add_ratio_features, feature_columns
+
+    df, _ = data
+    df = add_ratio_features(df)
+    df["SchoolDistrictK8"], df["SchoolDistrictHigh"] = "A Unified (X)", "A Unified (X)"
+    base = feature_columns(df)
+    full = feature_columns(df, ratios=True, school=True, comps=True)
+    assert "BedBathRatio" in full["numeric"] and "BedBathRatio" not in base["numeric"]
+    assert "SchoolDistrictK8" in full["high_card"] and "comp" in full and "comp" not in base
+
+
+def test_school_district_join_prefers_unified_then_level():
+    import geopandas as gpd
+    import pandas as pd
+    from shapely.geometry import box
+    from idx_avm.geo import assign_school_districts
+
+    districts = gpd.GeoDataFrame(
+        {"District": ["U (C)", "E (C)", "H (C)"], "DistrictType": ["Unified", "Elementary", "High"]},
+        geometry=[box(0, 0, 1, 1), box(1, 0, 2, 1), box(1, 0, 2, 1)], crs="EPSG:4326",
+    )
+    homes = pd.DataFrame({"Latitude": [0.5, 0.5, None], "Longitude": [0.5, 1.5, None]})
+    out = assign_school_districts(homes, districts)
+    assert out["SchoolDistrictK8"].tolist()[:2] == ["U (C)", "E (C)"]
+    assert out["SchoolDistrictHigh"].tolist()[:2] == ["U (C)", "H (C)"]
+    assert out[["SchoolDistrictK8", "SchoolDistrictHigh"]].iloc[2].isna().all()

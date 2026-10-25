@@ -26,7 +26,20 @@ from idx_avm import config  # noqa: E402  (also needed to unpickle QuantileClipp
 from idx_avm.load import load_processed  # noqa: E402
 
 PROCESSED = config.PROCESSED_DIR
-MODEL_PATH = ROOT / "models" / "baseline_linear.joblib"
+BASELINE_PATH = ROOT / "models" / "baseline_linear.joblib"
+BEST_PATH = ROOT / "models" / "best_model.joblib"
+MODEL_PATH = BEST_PATH if BEST_PATH.exists() else BASELINE_PATH
+FEATURE_LABELS = {
+    "comp_log_value": "Comps value (ZIP $/sq ft × size)", "comp_log_ppsf": "Comps $/sq ft (ZIP, prior sales)",
+    "PostalCode": "ZIP code", "City": "City", "CountyOrParish": "County", "LivingArea": "Living area",
+    "SchoolDistrictK8": "School district (K-8)", "SchoolDistrictHigh": "School district (high school)",
+    "BathroomsTotalInteger": "Bathrooms", "BedroomsTotal": "Bedrooms", "LotSizeSquareFeet": "Lot size",
+    "LotToLivingRatio": "Lot / living area", "BedBathRatio": "Bed / bath ratio", "PropertyAge": "Age",
+    "Latitude": "Latitude", "Longitude": "Longitude", "GarageSpaces": "Garage spaces", "ParkingTotal": "Parking",
+    "Stories": "Stories", "PoolPrivateYN": "Pool", "ViewYN": "View", "CloseMonthSin": "Season (sin)",
+    "CloseMonthCos": "Season (cos)",
+}
+MODEL_COLORS = {"Linear Regression": "#94a3b8", "Decision Tree": "#60a5fa", "Random Forest": "#2563eb"}
 ACCENT = "#2563eb"
 
 st.set_page_config(page_title="California Home Price Model", page_icon="🏠", layout="wide")
@@ -106,12 +119,19 @@ def page_overview() -> None:
     meta = read_json("split_metadata.json")
     counts, tm = m["pipeline_counts"], m["test_metrics"]
 
+    best = read_json("best_model_metrics.json") if (PROCESSED / "best_model_metrics.json").exists() else None
     c = st.columns(4)
     c[0].metric("MLS sales records", f"{counts['raw']:,}")
     c[1].metric("Single-family sales modeled", f"{counts['cleaned']:,}")
-    c[2].metric("Typical error (MdAPE)", f"{tm['MdAPE']:.1f}%")
-    c[3].metric("R² on unseen month", f"{tm['R2']:.3f}",
-                delta=f"+{tm['R2'] - m['unclipped_test_metrics']['R2']:.3f} vs. before fix")
+    if best:
+        bm = best["test_metrics"]
+        c[2].metric(f"Typical error · {best['selected_model']}", f"{bm['MdAPE']:.1f}%",
+                    delta=f"{bm['MdAPE'] - tm['MdAPE']:.1f} pts vs. baseline", delta_color="inverse")
+        c[3].metric("R² on unseen month", f"{bm['R2']:.3f}", delta=f"+{bm['R2'] - tm['R2']:.3f} vs. baseline")
+    else:
+        c[2].metric("Typical error (MdAPE)", f"{tm['MdAPE']:.1f}%")
+        c[3].metric("R² on unseen month", f"{tm['R2']:.3f}",
+                    delta=f"+{tm['R2'] - m['unclipped_test_metrics']['R2']:.3f} vs. before fix")
 
     st.subheader("The rule that shapes everything")
     st.markdown(
@@ -128,8 +148,9 @@ def page_overview() -> None:
             ("2. Clean", "Remove invalid prices, duplicates and impossible records, with a logged count at each step"),
             ("3. Split by time", f"Train on {len(meta['train_months'])} months, test on {meta['test_month']} (never shuffled)"),
             ("4. Preprocess", "Clip outliers, impute, encode, scale. All fit on training data only"),
-            ("5. Model", "Linear Regression on log(price): the Week 4 baseline"),
-            ("6. Evaluate", "MdAPE (headline), MAPE, R², MAE, plus a backtest on 3 months"),
+            ("5. Model", "Linear Regression baseline (Week 4), then Decision Tree and Random Forest (Week 5)"),
+            ("6. Features", "Bed/bath ratios, school districts via spatial join, comps from prior sales (Week 6)"),
+            ("7. Evaluate", "MdAPE (headline), MAPE, R², MAE, plus a backtest on 3 months"),
         ],
         columns=["Step", "What happens"],
     )
@@ -325,13 +346,170 @@ def page_results() -> None:
         )
 
 
+def page_models() -> None:
+    st.title("Model Comparison (Week 5)")
+    if not _need(PROCESSED / "week5_model_comparison.csv", PROCESSED / "week5_tuning_trials.csv"):
+        return
+    comp = read_csv("week5_model_comparison.csv")
+    st.markdown(
+        "Three models on the **same features and the same pipeline**. Each model's settings were tuned on the "
+        "**validation month**, and the **test month** was scored once at the end, so the comparison is fair."
+    )
+    base = comp.set_index("model").loc["Linear Regression"]
+    cols = st.columns(len(comp))
+    for col, (_, r) in zip(cols, comp.iterrows()):
+        delta = None if r["model"] == "Linear Regression" else f"{r['MdAPE'] - base['MdAPE']:.2f} pts vs. baseline"
+        col.metric(r["model"], f"{r['MdAPE']:.2f}% MdAPE", delta=delta, delta_color="inverse")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**Typical error (lower is better)**")
+        fig = px.bar(comp, x="model", y="MdAPE", color="model", color_discrete_map=MODEL_COLORS,
+                     text=comp["MdAPE"].round(2).astype(str) + "%")
+        fig.update_layout(height=340, showlegend=False, xaxis_title="", yaxis_title="Test MdAPE (%)")
+        st.plotly_chart(fig, width="stretch")
+    with c2:
+        st.markdown("**Variance explained (higher is better)**")
+        fig = px.bar(comp, x="model", y="R2", color="model", color_discrete_map=MODEL_COLORS,
+                     text=comp["R2"].round(3))
+        fig.update_layout(height=340, showlegend=False, xaxis_title="", yaxis_title="Test R²", yaxis_range=[0, 1])
+        st.plotly_chart(fig, width="stretch")
+
+    st.subheader("Full test-month results")
+    show = comp[["model", "params", "MdAPE", "MAPE", "R2", "MAE", "RMSE", "fit_seconds"]].rename(
+        columns={"model": "Model", "params": "Chosen settings", "fit_seconds": "Train time (s)"})
+    st.dataframe(show.style.format({"MdAPE": "{:.2f}%", "MAPE": "{:.2f}%", "R2": "{:.3f}", "MAE": "${:,.0f}",
+                                    "RMSE": "${:,.0f}", "Train time (s)": "{:.1f}"}),
+                 hide_index=True, width="stretch")
+
+    st.subheader("How the settings were chosen")
+    trials = read_csv("week5_tuning_trials.csv")
+    trials = trials[trials["model"] != "Linear Regression"].copy()
+    short = {"max_depth": "depth", "min_samples_leaf": "min leaf", "max_features": "features/split", "n_estimators": "trees"}
+    for k, v in short.items():
+        trials["params"] = trials["params"].str.replace(k, v)
+    trials["setting"] = trials["model"] + " · " + trials["params"]
+    best_idx = trials.groupby("model")["MdAPE"].idxmin()
+    trials["chosen"] = np.where(trials.index.isin(best_idx), "Chosen", "Tried")
+    trials["label"] = trials["MdAPE"].round(2).astype(str) + "%"
+    trials = trials.sort_values(["model", "MdAPE"], ascending=[True, False])
+    fig = px.bar(trials, x="MdAPE", y="setting", color="chosen", orientation="h", text="label",
+                 color_discrete_map={"Chosen": ACCENT, "Tried": "#cbd5e1"})
+    fig.update_yaxes(categoryorder="array", categoryarray=trials["setting"].tolist())
+    fig.update_layout(height=430, yaxis_title="", legend_title="",
+                      xaxis_title=f"Validation MdAPE (%) · trained on the 18 months before {trials['val_month'].iloc[0]}")
+    st.plotly_chart(fig, width="stretch")
+
+    st.subheader("Strengths and weaknesses")
+    st.markdown(
+        """
+| Model | Strengths | Weaknesses |
+|---|---|---|
+| **Linear Regression** | Fast, interpretable, stable across months | One straight-line effect per feature; misses how location and size interact |
+| **Decision Tree** | Learns non-linear effects and interactions on its own | Jumpy, high-variance predictions; overfits without depth limits |
+| **Random Forest** | Averages hundreds of trees, so much lower variance and the best accuracy here | Slower, larger, harder to explain; can't predict outside the price range it trained on |
+"""
+    )
+
+
+def page_features() -> None:
+    st.title("Feature Engineering (Week 6)")
+    if not _need(PROCESSED / "week6_feature_sets.csv"):
+        return
+    fs = read_csv("week6_feature_sets.csv")
+    order = list(dict.fromkeys(fs["feature_set"]))
+    st.markdown(
+        """
+Each feature set **adds** to the one before it, and every model is re-trained on each set.
+
+| Set | Adds | Allowed because |
+|---|---|---|
+| **Base** | size, beds, baths, lot, age, coordinates, county / city / ZIP | property facts and location |
+| **+ Ratios** | bed/bath ratio, lot-to-living-area ratio | arithmetic on property facts |
+| **+ School districts** | K-8 and high-school district from a **spatial join** against CA School District Areas 2024-25 | boundaries are fixed by location |
+| **+ Comp PPSF** | ZIP price per sq ft from **prior sales in the training window**, plus the implied comps value | learned on training sales only; never uses the home's own price |
+"""
+    )
+
+    st.subheader("Typical error by feature set")
+    fig = px.line(fs, x="feature_set", y="test_MdAPE", color="model", markers=True, color_discrete_map=MODEL_COLORS,
+                  category_orders={"feature_set": order})
+    fig.update_layout(height=380, xaxis_title="", yaxis_title="Test MdAPE (%)", legend_title="")
+    st.plotly_chart(fig, width="stretch")
+
+    st.subheader("Old vs. new feature set")
+    old = fs[fs["feature_set"] == order[0]].set_index("model")
+    new = fs[fs["feature_set"] == order[-1]].set_index("model")
+    table = pd.DataFrame({
+        "MdAPE, base": old["test_MdAPE"], "MdAPE, all features": new["test_MdAPE"],
+        "Change (pts)": new["test_MdAPE"] - old["test_MdAPE"],
+        "R², base": old["test_R2"], "R², all features": new["test_R2"], "Change in R²": new["test_R2"] - old["test_R2"],
+    })
+    st.dataframe(table.style.format("{:.3f}").format("{:.2f}", subset=["MdAPE, base", "MdAPE, all features", "Change (pts)"]),
+                 width="stretch")
+
+    with st.expander("Every model × feature set (validation and test)"):
+        st.dataframe(fs.style.format({c: "{:.3f}" for c in fs.columns if c.startswith(("val_", "test_"))}),
+                     hide_index=True, width="stretch")
+
+    if (PROCESSED / "best_model_metrics.json").exists():
+        best = read_json("best_model_metrics.json")
+        st.success(
+            f"**Selected model: {best['selected_model']} with '{best['selected_feature_set']}'**, chosen by validation-month "
+            f"MdAPE, not by the test month. Test MdAPE **{best['test_metrics']['MdAPE']:.2f}%**, R² "
+            f"**{best['test_metrics']['R2']:.3f}**, versus the baseline's "
+            f"{best['baseline_test_metrics']['MdAPE']:.2f}% and {best['baseline_test_metrics']['R2']:.3f}."
+        )
+        same = fs[fs["model"] == best["selected_model"]].set_index("feature_set")["val_MdAPE"]
+        gap = same[best["selected_feature_set"]] - same[order[0]]
+        if abs(gap) < 0.1:
+            st.caption(f"Honest read: on validation this is only {abs(gap):.2f} pts better than the same model on base "
+                       "features, which is effectively a tie. The new features mainly help the linear model.")
+
+    if (PROCESSED / "rf_feature_importance.csv").exists():
+        st.subheader("What the Random Forest relies on (all features)")
+        imp = read_csv("rf_feature_importance.csv")
+        imp["feature"] = imp["feature"].map(FEATURE_LABELS).fillna(imp["feature"])
+        fig = px.bar(imp.sort_values("importance"), x="importance", y="feature", orientation="h",
+                     color_discrete_sequence=[ACCENT])
+        fig.update_layout(height=460, xaxis_title="Share of total importance", yaxis_title="")
+        st.plotly_chart(fig, width="stretch")
+        st.caption("The comps value and ZIP/city encodings carry most of the signal. That's also why the new features "
+                   "barely move the Random Forest: it was already learning neighborhood price levels from ZIP and city.")
+
+    st.subheader("The school-district layer")
+    st.caption("Median sale price by high-school district (districts with 300+ sales in the train/test window)")
+    df = school_rows()
+    med = (df.groupby("SchoolDistrictHigh")[config.TARGET].agg(sales="size", median="median")
+           .query("sales >= 300").sort_values("median"))
+    pick = pd.concat([med.head(8), med.tail(8)]).reset_index()
+    fig = px.bar(pick, x="median", y="SchoolDistrictHigh", orientation="h", color_discrete_sequence=[ACCENT])
+    fig.update_layout(height=520, xaxis_title="Median sale price", yaxis_title="")
+    fig.update_xaxes(tickprefix="$")
+    st.plotly_chart(fig, width="stretch")
+    st.caption(f"{df['SchoolDistrictHigh'].notna().mean():.1%} of homes matched to a district. "
+               "Demographic fields in the district file are deliberately not used, to avoid fair-housing issues.")
+
+
+def school_rows() -> pd.DataFrame:
+    return _school_rows(_mtime("train_clean.csv"), _mtime("test_clean.csv"))
+
+
+@st.cache_data
+def _school_rows(train_mtime: float, test_mtime: float) -> pd.DataFrame:
+    from idx_avm.geo import assign_school_districts
+
+    return assign_school_districts(_cleaned_rows(train_mtime, test_mtime))
+
+
 def page_estimator() -> None:
     st.title("Price Estimator")
     if not _need(MODEL_PATH):
         return
     b = load_bundle()
     opts, d = b["options"], b["defaults"]
-    st.caption(f"Uses the saved Week 4 baseline. Its typical error on unseen homes is ±{b['metrics']['MdAPE']:.1f}% (MdAPE).")
+    label = f"{b['model_name']} ({b['feature_set']})" if "model_name" in b else "Week 4 Linear Regression baseline"
+    st.caption(f"Uses the saved {label}. Its typical error on unseen homes is ±{b['metrics']['MdAPE']:.1f}% (MdAPE).")
 
     # Location sits outside the form so City/ZIP lists refresh as soon as County/City change.
     c1, c2, c3 = st.columns(3)
@@ -372,11 +550,20 @@ def page_estimator() -> None:
         "AttachedGarageYN": np.nan, "NewConstructionYN": float(year_built >= today.year - 1),
         "CountyOrParish": county, "City": city, "PostalCode": zip_code,
     }
+    # Week 6 features: ratios from the inputs, school districts from the ZIP's coordinates.
+    row["BedBathRatio"] = beds / baths if baths else np.nan
+    row["LotToLivingRatio"] = (lot / sqft) if lot else np.nan
+    schools = {"SchoolDistrictK8": None, "SchoolDistrictHigh": None}
+    if any(c in b["features"] for c in schools) and ll:
+        from idx_avm.geo import district_for_point
+
+        schools = district_for_point(ll["Latitude"], ll["Longitude"])
+    row.update(schools)
     X = pd.DataFrame([row])
     missing = [f for f in b["features"] if f not in X.columns]
     assert not missing, f"App inputs don't match the model's schema: {missing}"
     X = X[b["features"]]
-    for col in ("CountyOrParish", "City", "PostalCode"):
+    for col in ("CountyOrParish", "City", "PostalCode", "SchoolDistrictK8", "SchoolDistrictHigh"):
         if col in X.columns:
             X[col] = X[col].astype("string")
     price = float(b["model"].predict(X)[0])
@@ -390,6 +577,8 @@ def page_estimator() -> None:
         f"A **{beds} bed / {baths} bath, {sqft:,} sq ft** home in **{city}, {zip_code}** ({county} County). "
         "List price and days on market aren't used, so this works for homes that aren't for sale."
     )
+    if schools.get("SchoolDistrictHigh"):
+        c2.caption(f"School districts (spatial join): {schools['SchoolDistrictK8']} · {schools['SchoolDistrictHigh']}")
 
 
 def page_next() -> None:
@@ -398,23 +587,25 @@ def page_next() -> None:
         """
 | Week | Plan |
 |---|---|
-| 5 | Decision Tree and Random Forest vs. this baseline |
-| 6 | Feature engineering: bed/bath ratio, school-district spatial join, comp-based neighborhood prices from *prior* sales |
+| ✅ 1–4 | Setup, exploration, leakage-safe preprocessing, Linear Regression baseline |
+| ✅ 5 | Decision Tree and Random Forest vs. the baseline |
+| ✅ 6 | Feature engineering: ratios, school-district spatial join, comps from prior sales |
 | 7 | Gradient boosting (XGBoost / LightGBM) with tuning on validation months |
 | 8 | Full error analysis: MAPE / MdAPE by price band and geography |
 | 9–12 | App polish, documentation, final presentation |
 
-**Where the baseline struggles:** luxury homes (top 20% of prices) have the highest error. A linear model can't
-capture how location and size interact, and tree-based models should help most there.
+**Where the models still struggle:** the most expensive homes (top 20% of prices) have the highest error.
+Gradient boosting and stronger comp features are the next things to try there.
 """
     )
-
 
 PAGES = {
     "Overview": page_overview,
     "Data & Cleaning": page_data,
     "Train/Test Design": page_design,
     "Baseline Results": page_results,
+    "Model Comparison": page_models,
+    "Feature Engineering": page_features,
     "Price Estimator": page_estimator,
     "What's Next": page_next,
 }
