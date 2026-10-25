@@ -4,3 +4,5 @@ font = "sans serif"
 
 [server]
 headless = true
+# Only this computer can open the app: it shows aggregates of confidential IDX data.
+address = "localhost"

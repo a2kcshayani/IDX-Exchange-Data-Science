@@ -56,8 +56,8 @@ python scripts/run_baseline.py
 # Weeks 5-6: tune tree models, compare feature sets, save the selected model (~10 min)
 python scripts/run_models.py
 
-# Presentation app (reads data/processed/ and models/)
-streamlit run app/app.py
+# Presentation app: one command that builds anything missing, then launches on localhost
+bash scripts/run_dashboard.sh
 
 # Or step through it interactively
 jupyter notebook notebooks/
@@ -149,7 +149,7 @@ Four cumulative feature sets, each re-trained with all three models (test-month 
 
 ## Presentation app
 
-`streamlit run app/app.py` opens an 8-page app:
+`bash scripts/run_dashboard.sh` (or `streamlit run app/app.py`) opens an 8-page app:
 
 1. Overview
 2. Data & cleaning: a data funnel, the cleaning log, and EDA charts
@@ -204,7 +204,7 @@ src/idx_avm/        config, load, clean, features, split, preprocess, window, me
 scripts/            run_preprocessing.py, run_baseline.py, run_models.py
 app/                app.py (Streamlit presentation + price estimator)
 notebooks/          01_exploration … 03_baseline_model, 04_model_comparison, 04b_feature_engineering
-docs/               data_dictionary.md
+docs/               data_dictionary.md, progress_notes.md (updates, issues found, open questions)
 tests/              synthetic data generator + pipeline tests
 data/, models/      (git-ignored) raw data, processed outputs, saved model
 ```
