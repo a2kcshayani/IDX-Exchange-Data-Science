@@ -6,3 +6,7 @@ font = "sans serif"
 headless = true
 # Only this computer can open the app: it shows aggregates of confidential IDX data.
 address = "localhost"
+
+[browser]
+# Don't send Streamlit usage telemetry (the app shows confidential IDX data aggregates).
+gatherUsageStats = false
