@@ -37,7 +37,9 @@ FEATURE_LABELS = {
     "LotToLivingRatio": "Lot / living area", "BedBathRatio": "Bed / bath ratio", "PropertyAge": "Age",
     "Latitude": "Latitude", "Longitude": "Longitude", "GarageSpaces": "Garage spaces", "ParkingTotal": "Parking",
     "Stories": "Stories", "PoolPrivateYN": "Pool", "ViewYN": "View", "CloseMonthSin": "Season (sin)",
-    "CloseMonthCos": "Season (cos)",
+    "CloseMonthCos": "Season (cos)", "DistToJobCenterKm": "Distance to job center",
+    "knn_log_ppsf": "Nearby comps $/sq ft (10 closest sales)", "knn_log_value": "Nearby comps value",
+    "knn_dist_km": "Distance to nearby comps",
 }
 MODEL_COLORS = {"Linear Regression": "#94a3b8", "Decision Tree": "#60a5fa", "Random Forest": "#2563eb"}
 ACCENT = "#2563eb"
@@ -427,7 +429,9 @@ Each feature set **adds** to the one before it, and every model is re-trained on
 | **Base** | size, beds, baths, lot, age, coordinates, county / city / ZIP | property facts and location |
 | **+ Ratios** | bed/bath ratio, lot-to-living-area ratio | arithmetic on property facts |
 | **+ School districts** | K-8 and high-school district from a **spatial join** against CA School District Areas 2024-25 | boundaries are fixed by location |
-| **+ Comp PPSF** | ZIP price per sq ft from **prior sales in the training window**, plus the implied comps value | learned on training sales only; never uses the home's own price |
+| **+ Job-center distance** | km to the nearest of LA, SF, San Jose, San Diego, Irvine, Sacramento | fixed by location |
+| **+ ZIP comps** | ZIP price per sq ft from **prior sales in the training window**, plus the implied comps value | learned on training sales only; never uses the home's own price |
+| **+ Nearby comps** | price per sq ft of the **10 closest prior sales**, the implied value, and how far away they are | same, by distance instead of ZIP |
 """
     )
 
@@ -460,11 +464,13 @@ Each feature set **adds** to the one before it, and every model is re-trained on
             f"**{best['test_metrics']['R2']:.3f}**, versus the baseline's "
             f"{best['baseline_test_metrics']['MdAPE']:.2f}% and {best['baseline_test_metrics']['R2']:.3f}."
         )
-        same = fs[fs["model"] == best["selected_model"]].set_index("feature_set")["val_MdAPE"]
-        gap = same[best["selected_feature_set"]] - same[order[0]]
-        if abs(gap) < 0.1:
-            st.caption(f"Honest read: on validation this is only {abs(gap):.2f} pts better than the same model on base "
-                       "features, which is effectively a tie. The new features mainly help the linear model.")
+        if "selection_rule" in best:
+            low = best["lowest_val"]
+            st.caption(
+                f"Selection rule: the {best['selection_rule']} (≈ half the month-to-month backtest spread). "
+                f"The lowest validation MdAPE was {low['model']} with '{low['feature_set']}' at {low['val_MdAPE']:.2f}%, "
+                f"so any extra features had to beat that by more than noise to be kept."
+            )
 
     if (PROCESSED / "rf_feature_importance.csv").exists():
         st.subheader("What the Random Forest relies on (all features)")
@@ -474,8 +480,9 @@ Each feature set **adds** to the one before it, and every model is re-trained on
                      color_discrete_sequence=[ACCENT])
         fig.update_layout(height=460, xaxis_title="Share of total importance", yaxis_title="")
         st.plotly_chart(fig, width="stretch")
-        st.caption("The comps value and ZIP/city encodings carry most of the signal. That's also why the new features "
-                   "barely move the Random Forest: it was already learning neighborhood price levels from ZIP and city.")
+        st.caption("The two comps values (nearby and ZIP) plus ZIP and city carry most of the signal. The Random Forest was "
+                   "already learning neighborhood price levels from location, so comps mostly cut its big misses "
+                   "(higher R²) rather than its typical error.")
 
     st.subheader("The school-district layer")
     st.caption("Median sale price by high-school district (districts with 300+ sales in the train/test window)")
@@ -508,7 +515,7 @@ def page_estimator() -> None:
         return
     b = load_bundle()
     opts, d = b["options"], b["defaults"]
-    label = f"{b['model_name']} ({b['feature_set']})" if "model_name" in b else "Week 4 Linear Regression baseline"
+    label = f"{b['model_name']} · feature set: {b['feature_set']}" if "model_name" in b else "Week 4 Linear Regression baseline"
     st.caption(f"Uses the saved {label}. Its typical error on unseen homes is ±{b['metrics']['MdAPE']:.1f}% (MdAPE).")
 
     # Location sits outside the form so City/ZIP lists refresh as soon as County/City change.
@@ -550,9 +557,12 @@ def page_estimator() -> None:
         "AttachedGarageYN": np.nan, "NewConstructionYN": float(year_built >= today.year - 1),
         "CountyOrParish": county, "City": city, "PostalCode": zip_code,
     }
-    # Week 6 features: ratios from the inputs, school districts from the ZIP's coordinates.
+    # Week 6 features: ratios from the inputs; distance and school districts from the ZIP's coordinates.
     row["BedBathRatio"] = beds / baths if baths else np.nan
     row["LotToLivingRatio"] = (lot / sqft) if lot else np.nan
+    from idx_avm.features import add_distance_features
+
+    row["DistToJobCenterKm"] = float(add_distance_features(pd.DataFrame([row]))["DistToJobCenterKm"].iloc[0])
     schools = {"SchoolDistrictK8": None, "SchoolDistrictHigh": None}
     if any(c in b["features"] for c in schools) and ll:
         from idx_avm.geo import district_for_point

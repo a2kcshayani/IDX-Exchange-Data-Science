@@ -1,5 +1,7 @@
 # Progress Notes (Weeks 1–6)
 
+_Last updated after the Week 6 completion pass (nearby comps, job-center distance, noise-aware model selection)._
+
 A running list of what changed, what looked wrong and how it was handled, and what's still open.
 Numbers are from the April 2026 test month (12,337 sales) unless noted.
 
@@ -18,16 +20,20 @@ Stop it with Ctrl+C. The app is bound to `localhost`, so only this computer can 
 
 | | Week 4 baseline | Weeks 5–6 selected model |
 |---|---|---|
-| Model | Linear Regression | Random Forest + school districts |
-| MdAPE (headline) | 11.11% | **7.81%** |
+| Model | Linear Regression | Random Forest (Week 4 base features) |
+| MdAPE (headline) | 11.11% | **7.78%** |
 | R² | 0.811 | **0.885** |
-| MAE | $212,780 | $161,137 |
-| Within 10% of sale price | 45.7% | **59.8%** |
-| Luxury homes ($1.67M+) MdAPE | 16.4% | **11.8%** |
+| MAE | $212,780 | $161,694 |
+| Within 10% of sale price | 45.7% | **59.4%** |
+| Luxury homes ($1.67M+) MdAPE | 16.4% | **12.1%** |
 
 - Week 5: the Random Forest beats the baseline by 3.3 MdAPE points (30%). The Decision Tree is in between, at 9.55%.
-- Week 6: comps from prior sales help the linear model (11.11% → 9.88%). For tree models, every Week 6 feature change is within noise.
-- Dashboard: added Model Comparison and Feature Engineering pages. The estimator uses the selected Random Forest and looks up school districts automatically.
+- Week 6, six cumulative feature sets: ratios, school districts (spatial join), job-center distance, ZIP comps, and
+  nearby comps (10 closest prior sales). Nearby comps are the strongest: Linear Regression 11.11% → 9.61%, and the Random Forest
+  reaches the best R², 0.902. Typical error for tree models is unchanged within noise.
+- Selection rule: an addition must beat the best by more than 0.10 validation points, or the simpler setup wins.
+  So the selected model is the base Random Forest. The runner-up, + job-center distance, was 0.08 points better: a tie.
+- Dashboard: Model Comparison and Feature Engineering pages. The estimator uses the selected model.
 
 ## Issues found and how they were handled
 
@@ -42,13 +48,14 @@ Stop it with Ctrl+C. The app is bound to `localhost`, so only this computer can 
 
 ## Things to look into
 
-1. **Week 6 features barely help the Random Forest.** It already learns neighborhood price levels from ZIP and city.
-   Better comps could change that: nearest-neighbor comps by distance instead of ZIP, and recent sales weighted more heavily.
-2. **Selected model is a near-tie.** RF + school districts beat the base RF by only 0.03 points on validation. Prefer the
-   simpler model when results tie, and check it again after Week 7.
-3. **Luxury homes are still the weakest band** (11.8% MdAPE versus 6–7% for mid-priced homes). Trees can't predict
+1. **Comps raise R² but not typical error for the Random Forest** (R² 0.885 → 0.902, MdAPE flat). They mostly fix big misses.
+   If IDX cares about tail risk (lending exposure), consider choosing on RMSE/R² as well as MdAPE. Next ideas: weight
+   recent sales more, and compare like-for-like homes (similar size and age) instead of just the nearest.
+2. **Selection is sensitive to the tie rule.** With a 0.10-point tolerance the base Random Forest wins. Without it, + job-center
+   distance would win (test MdAPE 7.70% vs. 7.78%). Re-check after Week 7, ideally on May 2026 data.
+3. **Luxury homes are still the weakest band** (12.1% MdAPE versus 6–7% for mid-priced homes). Trees can't predict
    above the highest training price, so check how the $5M+ tail behaves.
-4. **Small signed bias:** the median prediction is 1.1% below the sale price. Check whether this is the market rising
+4. **Small signed bias:** the median prediction is 1.0% below the sale price. Check whether this is the market rising
    between the training window and the test month (an argument for a time-trend feature).
 5. **Model file size:** the saved Random Forest is 353 MB, so the estimator's first load takes about 15 seconds. Week 9: fewer or shallower
    trees, or gradient boosting (much smaller).

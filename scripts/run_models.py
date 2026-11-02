@@ -2,11 +2,13 @@
 
 Week 5: tune Decision Tree and Random Forest on the validation month, then
         compare test-month metrics against the Linear Regression baseline.
-Week 6: re-train every model on four cumulative feature sets
-        (base -> +ratios -> +school districts -> +comp PPSF) and compare.
+Week 6: re-train every model on six cumulative feature sets
+        (base -> +ratios -> +school districts -> +job-center distance
+        -> +ZIP comps -> +nearby comps) and compare.
 
 Model / feature-set selection uses the validation month only; the test month
-is reported for every configuration but never used to choose.
+is reported for every configuration but never used to choose. Differences
+within NOISE_TOLERANCE_PTS go to the simpler configuration (models.select_model).
 
 Usage:
     python scripts/run_models.py
@@ -22,17 +24,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from idx_avm import config  # noqa: E402
 from idx_avm.baseline import breakdowns, residual_summary  # noqa: E402
-from idx_avm.models import MODEL_GRIDS, feature_importance, fit_and_score, tune_on_validation  # noqa: E402
+from idx_avm.models import (  # noqa: E402
+    MODEL_GRIDS, NOISE_TOLERANCE_PTS, feature_importance, fit_and_score, select_model, tune_on_validation,
+)
 from idx_avm.pipeline import prepare_dataset  # noqa: E402
 from idx_avm.preprocess import feature_list  # noqa: E402
 
 MODELS_DIR = config.PROJECT_ROOT / "models"
 
+# Cumulative: each set adds to the one before it. Order = complexity, used for tie-breaking.
 FEATURE_SETS = {
     "Base (Week 4)": {},
     "+ Ratios": {"ratios": True},
     "+ School districts": {"ratios": True, "school": True},
-    "+ Comp PPSF": {"ratios": True, "school": True, "comps": True},
+    "+ Job-center distance": {"ratios": True, "school": True, "distance": True},
+    "+ ZIP comps": {"ratios": True, "school": True, "distance": True, "comps": True},
+    "+ Nearby comps": {"ratios": True, "school": True, "distance": True, "comps": True, "nearby": True},
 }
 
 
@@ -74,10 +81,13 @@ def main() -> None:
     week6 = pd.DataFrame(rows)
 
     # ---------------- Select by validation, then backtest the winner
-    best_row = week6.loc[week6["val_MdAPE"].idxmin()]
+    lowest = week6.loc[week6["val_MdAPE"].idxmin()]
+    best_row = select_model(week6, list(FEATURE_SETS))
     best_key = (best_row["model"], best_row["feature_set"])
     best = fitted[best_key]
-    print(f"\nSelected by validation MdAPE: {best_key[0]} with '{best_key[1]}'")
+    print(f"\nLowest validation MdAPE: {lowest['model']} with '{lowest['feature_set']}' ({lowest['val_MdAPE']:.2f}%)")
+    print(f"Selected (simplest within {NOISE_TOLERANCE_PTS} pts): {best_key[0]} with '{best_key[1]}' "
+          f"({best_row['val_MdAPE']:.2f}%)")
 
     backtest = []
     for k in (2, 1, 0):
@@ -89,7 +99,7 @@ def main() -> None:
     print("\nBacktest of selected model:\n", backtest.round(3).to_string(index=False))
 
     # Importances from the Random Forest on the full feature set (most informative view of Week 6).
-    importances = feature_importance(fitted[("Random Forest", "+ Comp PPSF")])
+    importances = feature_importance(fitted[("Random Forest", list(FEATURE_SETS)[-1])])
     parts = breakdowns(best.test)
     resid = residual_summary(best.test)
 
@@ -106,6 +116,10 @@ def main() -> None:
     summary = {
         "test_month": str(test_month), "validation_month": str(val_month), "n_train_months": x,
         "selected_model": best_key[0], "selected_feature_set": best_key[1],
+        "selection_rule": f"simplest configuration within {NOISE_TOLERANCE_PTS} pts of the lowest validation MdAPE",
+        "lowest_val": {"model": lowest["model"], "feature_set": lowest["feature_set"], "val_MdAPE": lowest["val_MdAPE"]},
+        "selected_val_MdAPE": best_row["val_MdAPE"],
+        "feature_set_order": list(FEATURE_SETS),
         "selected_params": {k: v for k, v in best_params[best_key[0]].items() if k != "n_jobs"},
         "test_metrics": best.metrics, "accuracy_bands": resid,
         "baseline_test_metrics": week5.loc[week5["model"] == "Linear Regression"].iloc[0].to_dict(),

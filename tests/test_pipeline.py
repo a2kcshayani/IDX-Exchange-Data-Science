@@ -128,3 +128,48 @@ def test_school_district_join_prefers_unified_then_level():
     assert out["SchoolDistrictK8"].tolist()[:2] == ["U (C)", "E (C)"]
     assert out["SchoolDistrictHigh"].tolist()[:2] == ["U (C)", "H (C)"]
     assert out[["SchoolDistrictK8", "SchoolDistrictHigh"]].iloc[2].isna().all()
+
+
+def test_nearby_comps_use_closest_sales_and_never_a_rows_own_price():
+    import numpy as np
+    import pandas as pd
+    from idx_avm.preprocess import NearbyCompsEncoder
+
+    # Two clusters ~50 km apart: a cheap one ($300/sq ft) and an expensive one ($1,200/sq ft).
+    rng = np.random.default_rng(0)
+    lat = np.r_[34.0 + rng.normal(0, 0.01, 60), 34.45 + rng.normal(0, 0.01, 60)]
+    lon = np.r_[-118.0 + rng.normal(0, 0.01, 60), -118.0 + rng.normal(0, 0.01, 60)]
+    X = pd.DataFrame({"Latitude": lat, "Longitude": lon, "LivingArea": 1500.0})
+    y = np.log(np.r_[np.full(60, 300.0), np.full(60, 1200.0)] * 1500.0)
+    enc = NearbyCompsEncoder(k=5)
+    train_out = enc.fit_transform(X, y)
+    assert np.allclose(train_out[:60, 0], np.log(300.0)) and np.allclose(train_out[60:, 0], np.log(1200.0))
+    # A unique price can't come back through cross-fitting: its comps exclude it.
+    y_unique = y.copy()
+    y_unique[0] = np.log(99_999.0 * 1500.0)
+    assert not np.isclose(NearbyCompsEncoder(k=1).fit_transform(X, y_unique)[0, 0], np.log(99_999.0))
+    new = enc.transform(pd.DataFrame({"Latitude": [34.45, np.nan], "Longitude": [-118.0, np.nan], "LivingArea": [1500.0, 1500.0]}))
+    assert np.isclose(new[0, 0], np.log(1200.0))
+    assert np.isclose(new[1, 0], enc.prior_) and new[0, 2] < 5        # missing coords -> overall median; dist in km
+
+
+def test_job_center_distance_is_zero_downtown_and_grows_inland():
+    import pandas as pd
+    from idx_avm.features import add_distance_features
+
+    out = add_distance_features(pd.DataFrame({"Latitude": [34.0522, 36.7378], "Longitude": [-118.2437, -119.7871]}))
+    assert out["DistToJobCenterKm"].iloc[0] < 0.01            # downtown LA
+    assert 150 < out["DistToJobCenterKm"].iloc[1] < 300       # Fresno: far from every center
+
+
+def test_select_model_prefers_simpler_config_within_noise():
+    import pandas as pd
+    from idx_avm.models import select_model
+
+    results = pd.DataFrame({
+        "feature_set": ["Base", "Base", "+ More", "+ More"],
+        "model": ["Linear Regression", "Random Forest", "Linear Regression", "Random Forest"],
+        "val_MdAPE": [11.0, 7.75, 10.0, 7.70],
+    })
+    assert select_model(results, ["Base", "+ More"], tol=0.10)["feature_set"] == "Base"      # 0.05 gain = noise
+    assert select_model(results, ["Base", "+ More"], tol=0.01)["feature_set"] == "+ More"    # real gain wins

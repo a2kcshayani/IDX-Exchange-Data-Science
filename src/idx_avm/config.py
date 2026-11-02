@@ -100,6 +100,19 @@ ENGINEERED_NUMERIC = ["PropertyAge", "CloseMonthSin", "CloseMonthCos"]
 RATIO_FEATURES = ["BedBathRatio", "LotToLivingRatio"]          # features.add_ratio_features()
 SCHOOL_FEATURES = ["SchoolDistrictK8", "SchoolDistrictHigh"]   # geo.assign_school_districts()
 COMP_INPUTS = ["PostalCode", "LivingArea"]                     # preprocess.CompPPSFEncoder
+NEARBY_INPUTS = ["Latitude", "Longitude", "LivingArea"]        # preprocess.NearbyCompsEncoder
+DISTANCE_FEATURES = ["DistToJobCenterKm"]                      # features.add_distance_features()
+
+# Major California employment centers (downtown coordinates) for the distance feature
+# (best-practices §05: distance to CBD / major employment centers).
+JOB_CENTERS = {
+    "Downtown Los Angeles": (34.0522, -118.2437),
+    "San Francisco": (37.7749, -122.4194),
+    "San Jose": (37.3382, -121.8863),
+    "San Diego": (32.7157, -117.1611),
+    "Irvine": (33.6846, -117.8265),
+    "Sacramento": (38.5816, -121.4944),
+}
 
 # Columns used for de-duplication / identity, never as features.
 ID_COLUMNS = ["ListingKey", "ListingId", "UnparsedAddress", "ParcelNumber"]

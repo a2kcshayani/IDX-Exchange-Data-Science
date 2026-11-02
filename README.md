@@ -123,29 +123,38 @@ the **test month (Apr 2026)**, 12,337 sales.
 
 ## Week 6 results: feature engineering
 
-Four cumulative feature sets, each re-trained with all three models (test-month MdAPE):
+Six cumulative feature sets, each re-trained with all three models (test-month MdAPE, with R² in brackets):
 
 | Feature set | Linear Regression | Decision Tree | Random Forest |
 |---|---|---|---|
-| Base (Week 4) | 11.11% | 9.55% | 7.78% |
-| + Bed/bath and lot/living ratios | 11.12% | 9.63% | 7.82% |
-| + School districts (spatial join) | 11.14% | 9.70% | 7.81% |
-| + Comp PPSF from prior sales | **9.88%** | 9.58% | 7.85% |
+| Base (Week 4) | 11.11% (0.811) | 9.55% (0.847) | 7.78% (0.885) |
+| + Bed/bath and lot/living ratios | 11.12% (0.811) | 9.63% (0.847) | 7.82% (0.882) |
+| + School districts (spatial join) | 11.14% (0.813) | 9.70% (0.851) | 7.81% (0.885) |
+| + Distance to nearest job center | 11.03% (0.813) | 9.65% (0.848) | 7.70% (0.888) |
+| + ZIP comps (ZIP $/sq ft, prior sales) | 9.87% (0.843) | 9.54% (0.849) | 7.76% (0.888) |
+| + Nearby comps (10 closest prior sales) | **9.61% (0.871)** | 9.54% (0.870) | 7.80% (**0.902**) |
 
 - **School districts:** a spatial join of each home's coordinates against the CA School District Areas 2024-25 polygons
-  matched **99.3%** of homes (the rest have no coordinates) to 469 K-8 and 321 high-school districts.
-- **Comp PPSF:** each ZIP's median price per sq ft from training-window sales, cross-fitted so no home sees its own price
-  (`CompPPSFEncoder`). It's the leakage-safe replacement for PPSF computed from ClosePrice.
-- **What helped:** comps improved the linear model a lot (11.11% → 9.88%, R² 0.811 → 0.843). For the tree models, the
-  changes are within noise (±0.1 points). Trees were already learning neighborhood price levels from ZIP and city, and the
-  importances confirm the overlap: the comps value, ZIP, and city carry about 69% of the Random Forest's importance.
-- **Selected model** (by validation MdAPE): Random Forest + school districts, at **7.81% MdAPE, R² 0.885** on the test
-  month. On validation it is effectively tied with the base Random Forest (0.03 points apart).
-- **Backtest of the selected model:** MdAPE 7.92% / 7.69% / 7.81% for Feb / Mar / Apr 2026.
-- **Accuracy bands:** 34.7% of homes within 5% of the sale price (baseline: 24.4%), **59.8% within 10%** (45.7%), and 84.0% within 20% (74.4%).
-- **Luxury homes improved the most:** MdAPE on $1.67M+ homes fell from 16.4% to 11.8%, and on $575K–$800K homes from 9.1% to 6.0%.
+  matched over 99% of homes (99.3% of the test month; the rest have no coordinates) to 469 K-8 and 321 high-school districts.
+- **Comps, done leakage-safe:** both comp features use only *prior* sales in the training window, are fit inside the
+  pipeline, and are cross-fitted so no home ever sees its own price. This replaces PPSF computed from ClosePrice. The
+  nearby version follows the IDX memo's "comp-based PPSF from nearby sales": the 10 closest prior sales by distance
+  (`NearbyCompsEncoder`), instead of a ZIP-wide median (`CompPPSFEncoder`).
+- **What helped:** nearby comps are the strongest addition. They cut Linear Regression error from 11.11% to 9.61% (R² 0.811 → 0.871)
+  and give the Random Forest the best R² of any configuration (0.902), meaning fewer large misses.
+  The Random Forest's *typical* error doesn't move: it was already learning neighborhood price levels from location, and the
+  comps now carry most of its importance (nearby comps value 38%, ZIP comps value 21%).
+- **Selection rule (best practices §09):** an addition has to beat noise to be kept. Validation-MdAPE differences under 0.10
+  points (about half the month-to-month backtest spread) count as ties, and ties go to the simpler setup. The lowest
+  validation error was Random Forest + job-center distance (7.64%), only 0.08 points ahead of the base Random Forest (7.72%), so
+  the **selected model is the Random Forest on the Week 4 base features**.
+- **Selected model on the test month:** **7.78% MdAPE, R² 0.885, MAE $161,694**. Backtest: 7.99% / 7.72% / 7.78% for Feb / Mar / Apr 2026.
+- **Accuracy bands:** 34.9% of homes within 5% of the sale price (baseline: 24.4%), **59.4% within 10%** (45.7%), 84.3% within 20% (74.4%).
+- **Luxury homes improved the most:** MdAPE on $1.67M+ homes fell from 16.4% to 12.1%, and on $575K–$800K homes from 9.1% to 6.0%.
 - **Excluded on purpose:** the district file's demographic fields (race/ethnicity shares). Pricing homes on neighborhood
   demographic composition raises fair-housing concerns, so only district identity is used.
+
+Full list of features, how each is built, and what's excluded: [docs/features.md](docs/features.md).
 
 ## Presentation app
 
@@ -157,7 +166,7 @@ Four cumulative feature sets, each re-trained with all three models (test-month 
 4. Baseline results: metrics, before/after comparison, backtest, and error by price band and county
 5. Model comparison (Week 5): tree models vs. baseline, tuning trials, strengths and weaknesses
 6. Feature engineering (Week 6): every feature set × model, old vs. new table, importances, school-district prices
-7. Price estimator: the selected Random Forest, with automatic school-district lookup from the ZIP code
+7. Price estimator: the selected Random Forest, with distance and school-district lookup from the ZIP code
 8. What's next
 
 It reads only local, git-ignored outputs, so run the three scripts above first. The saved Random Forest is about 350 MB and takes around 15 seconds to load the first time.

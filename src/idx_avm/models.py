@@ -9,7 +9,6 @@ import time
 from dataclasses import dataclass, field
 from itertools import product
 
-
 import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LinearRegression
@@ -85,6 +84,25 @@ def tune_on_validation(df, test_month, n_train_months, model_name, flags, log=pr
     return best, trials
 
 
+# Validation MdAPE differences smaller than this are treated as noise (the selected model's
+# month-to-month backtest spread is ~0.2 pts), per best-practices §09.
+NOISE_TOLERANCE_PTS = 0.10
+MODEL_COMPLEXITY = {name: i for i, name in enumerate(MODEL_GRIDS)}
+
+
+def select_model(results: pd.DataFrame, feature_set_order: list[str], tol: float = NOISE_TOLERANCE_PTS) -> pd.Series:
+    """Pick the simplest configuration whose validation MdAPE is within `tol` of the best.
+
+    "Simplest" = earliest feature set (fewest additions), then simplest model. An addition
+    only earns its place if it beats the noise; ties go to the simpler pipeline.
+    """
+    best = results["val_MdAPE"].min()
+    near = results[results["val_MdAPE"] <= best + tol].copy()
+    near["_fs"] = near["feature_set"].map({f: i for i, f in enumerate(feature_set_order)})
+    near["_m"] = near["model"].map(MODEL_COMPLEXITY)
+    return near.sort_values(["_fs", "_m", "val_MdAPE"]).iloc[0].drop(["_fs", "_m"])
+
+
 def feature_importance(result: FitResult, top: int = 15) -> pd.DataFrame:
     """Impurity importances for tree models, mapped back to raw input names."""
     pipe = result.model.regressor_
@@ -103,6 +121,3 @@ def feature_importance(result: FitResult, top: int = 15) -> pd.DataFrame:
 def _fmt(params: dict) -> str:
     shown = {k: v for k, v in params.items() if k != "n_jobs"}
     return ", ".join(f"{k}={v}" for k, v in shown.items()) or "defaults"
-
-
-

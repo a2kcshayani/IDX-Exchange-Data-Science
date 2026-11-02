@@ -49,18 +49,39 @@ def add_ratio_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def add_distance_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Great-circle distance (km) to the nearest major employment center. Fixed per location."""
+    df = df.copy()
+    lat, lon = np.radians(df["Latitude"].to_numpy(dtype=float)), np.radians(df["Longitude"].to_numpy(dtype=float))
+    dists = []
+    for c_lat, c_lon in config.JOB_CENTERS.values():
+        c_lat, c_lon = np.radians(c_lat), np.radians(c_lon)
+        a = np.sin((lat - c_lat) / 2) ** 2 + np.cos(lat) * np.cos(c_lat) * np.sin((lon - c_lon) / 2) ** 2
+        dists.append(2 * 6371.0 * np.arcsin(np.sqrt(a)))
+    df["DistToJobCenterKm"] = np.min(np.vstack(dists), axis=0)
+    return df
+
+
 def feature_columns(
-    df: pd.DataFrame, ratios: bool = False, school: bool = False, comps: bool = False
+    df: pd.DataFrame,
+    ratios: bool = False,
+    school: bool = False,
+    comps: bool = False,
+    nearby: bool = False,
+    distance: bool = False,
 ) -> dict[str, list[str]]:
     """Return the whitelisted feature groups that actually exist in df.
 
     The flags switch on the Week 6 additions so feature sets can be compared:
-    ratios (bed/bath, lot/living), school (district spatial join), and comps
-    (train-fit ZIP price-per-sq-ft from prior sales, see CompPPSFEncoder).
+    ratios (bed/bath, lot/living), school (district spatial join), comps
+    (train-fit ZIP price-per-sq-ft from prior sales, see CompPPSFEncoder), nearby
+    (k nearest prior sales by distance, see NearbyCompsEncoder) and distance
+    (km to the nearest major employment center).
     """
     # Columns that are entirely empty carry no information (and break median imputation).
     present = {c for c in df.columns if df[c].notna().any()}
-    numeric = config.NUMERIC_FEATURES + config.ENGINEERED_NUMERIC + (config.RATIO_FEATURES if ratios else [])
+    numeric = (config.NUMERIC_FEATURES + config.ENGINEERED_NUMERIC + (config.RATIO_FEATURES if ratios else [])
+               + (config.DISTANCE_FEATURES if distance else []))
     high_card = config.HIGH_CARD_CATEGORICAL + (config.SCHOOL_FEATURES if school else [])
     groups = {
         "numeric": [c for c in numeric if c in present],
@@ -70,6 +91,8 @@ def feature_columns(
     }
     if comps:
         groups["comp"] = [c for c in config.COMP_INPUTS if c in present]
+    if nearby:
+        groups["nearby"] = [c for c in config.NEARBY_INPUTS if c in present]
     audit_features([c for cols in groups.values() for c in cols])
     return groups
 

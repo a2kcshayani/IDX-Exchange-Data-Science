@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from idx_avm import config  # noqa: E402
-from idx_avm.features import add_ratio_features, feature_columns  # noqa: E402
+from idx_avm.features import add_distance_features, add_ratio_features, feature_columns  # noqa: E402
 from idx_avm.load import load_processed  # noqa: E402
 
 # feature -> (description, how it's built)
@@ -45,8 +45,12 @@ DESCRIPTIONS = {
     "LotToLivingRatio": ("Lot size ÷ living area", "Week 6 ratio; how much yard per sq ft of house"),
     "SchoolDistrictK8": ("K-8 school district", "Week 6 spatial join to CA School District Areas 2024-25; target-encoded"),
     "SchoolDistrictHigh": ("High-school district", "Week 6 spatial join to CA School District Areas 2024-25; target-encoded"),
-    "comp_log_ppsf": ("Neighborhood $/sq ft from prior sales", "Week 6 comps: ZIP median of training-window sales, cross-fitted"),
-    "comp_log_value": ("Comps-implied home value", "Week 6 comps: neighborhood $/sq ft × this home's sq ft"),
+    "DistToJobCenterKm": ("Distance to nearest major job center (km)", "Week 6: great-circle km to the closest of LA, SF, San Jose, San Diego, Irvine, Sacramento"),
+    "comp_log_ppsf": ("ZIP $/sq ft from prior sales", "Week 6 ZIP comps: ZIP median of training-window sales, cross-fitted"),
+    "comp_log_value": ("ZIP comps-implied value", "Week 6 ZIP comps: ZIP $/sq ft × this home's sq ft"),
+    "knn_log_ppsf": ("$/sq ft of the 10 nearest prior sales", "Week 6 nearby comps: k-nearest training sales by distance, cross-fitted"),
+    "knn_log_value": ("Nearby comps-implied value", "Week 6 nearby comps: nearby $/sq ft × this home's sq ft"),
+    "knn_dist_km": ("Distance to those 10 comps (km)", "Week 6 nearby comps: median distance; signals urban vs. rural"),
 }
 
 EXCLUDED = [
@@ -64,14 +68,18 @@ SETS = [
     ("Base (Week 4)", {}),
     ("+ Ratios", {"ratios": True}),
     ("+ School districts", {"ratios": True, "school": True}),
-    ("+ Comp PPSF", {"ratios": True, "school": True, "comps": True}),
+    ("+ Job-center distance", {"ratios": True, "school": True, "distance": True}),
+    ("+ ZIP comps", {"ratios": True, "school": True, "distance": True, "comps": True}),
+    ("+ Nearby comps", {"ratios": True, "school": True, "distance": True, "comps": True, "nearby": True}),
 ]
 
 
 def raw_features(groups: dict) -> list[str]:
-    cols = [c for k, cs in groups.items() if k != "comp" for c in cs]
+    cols = [c for k, cs in groups.items() if k not in ("comp", "nearby") for c in cs]
     if groups.get("comp"):
         cols += ["comp_log_ppsf", "comp_log_value"]
+    if groups.get("nearby"):
+        cols += ["knn_log_ppsf", "knn_log_value", "knn_dist_km"]
     return list(dict.fromkeys(cols))
 
 
@@ -80,7 +88,7 @@ def main() -> None:
     parser.add_argument("--markdown", action="store_true", help="also write docs/features.md")
     args = parser.parse_args()
 
-    train = add_ratio_features(load_processed("train"))
+    train = add_distance_features(add_ratio_features(load_processed("train")))
     # Spatial join only for the column list (fast); fall back to assuming it exists.
     try:
         from idx_avm.geo import assign_school_districts

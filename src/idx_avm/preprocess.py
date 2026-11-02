@@ -113,6 +113,93 @@ class CompPPSFEncoder(TransformerMixin, BaseEstimator):
         return np.array(["comp_log_ppsf", "comp_log_value"], dtype=object)
 
 
+class NearbyCompsEncoder(TransformerMixin, BaseEstimator):
+    """Comps from the k nearest prior sales by distance (Week 6, "comp-based PPSF from nearby sales").
+
+    Input columns: [Latitude, Longitude, LivingArea]; y is log(ClosePrice). Learns the
+    locations and log price-per-sq-ft of training-window sales. For each home it finds the
+    k nearest of those sales and outputs:
+      knn_log_ppsf   - median log $/sq ft of the k nearest sales
+      knn_log_value  - knn_log_ppsf + log(this home's sq ft): the comps-implied log value
+      knn_dist_km    - median distance to those sales (a density / rural signal)
+
+    fit_transform cross-fits (K folds): a training home's comps come only from other
+    folds, so it never sees its own price. Homes without coordinates get the overall
+    median $/sq ft and the training median distance.
+    """
+
+    KM_PER_DEG = 111.0
+
+    def __init__(self, k: int = 10, n_splits: int = 5, random_state: int = config.RANDOM_SEED):
+        self.k = k
+        self.n_splits = n_splits
+        self.random_state = random_state
+
+    def _xy(self, lat, lon):
+        # Equirectangular projection to km: accurate to well under 1% at California's latitudes.
+        return np.column_stack([lat * self.KM_PER_DEG, lon * self.KM_PER_DEG * np.cos(np.radians(self.lat0_))])
+
+    @staticmethod
+    def _split(X):
+        X = pd.DataFrame(X).apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+        return X[:, 0], X[:, 1], X[:, 2]
+
+    def _build(self, xy, log_ppsf):
+        from sklearn.neighbors import KDTree
+
+        return KDTree(xy), log_ppsf
+
+    def _query(self, index, lat, lon, sqft):
+        tree, values = index
+        out = np.column_stack([np.full(len(lat), self.prior_), np.zeros(len(lat)), np.full(len(lat), self.dist_median_)])
+        has_xy = np.isfinite(lat) & np.isfinite(lon)
+        if has_xy.any():
+            k = min(self.k, len(values))
+            dist, idx = tree.query(self._xy(lat[has_xy], lon[has_xy]), k=k)
+            out[has_xy, 0] = np.median(values[idx], axis=1)
+            out[has_xy, 2] = np.median(dist, axis=1)
+        s = np.where(np.isfinite(sqft) & (sqft > 0), sqft, self.sqft_median_)
+        out[:, 1] = out[:, 0] + np.log(np.clip(s, self.sqft_lo_, self.sqft_hi_))
+        return out
+
+    def _usable(self, lat, lon, sqft, y):
+        ok = np.isfinite(lat) & np.isfinite(lon) & np.isfinite(sqft) & (sqft > 0)
+        return ok, np.asarray(y, dtype=float) - np.log(np.where(ok, sqft, 1.0))
+
+    def fit(self, X, y):
+        lat, lon, sqft = self._split(X)
+        ok, log_ppsf = self._usable(lat, lon, sqft, y)
+        self.lat0_ = float(np.nanmedian(lat))
+        valid = sqft[np.isfinite(sqft) & (sqft > 0)]
+        self.sqft_median_ = float(np.median(valid))
+        self.sqft_lo_, self.sqft_hi_ = np.quantile(valid, [config.PRICE_LOWER_Q, config.PRICE_UPPER_Q])
+        self.prior_ = float(np.median(log_ppsf[ok]))
+        self.dist_median_ = 0.0
+        self.index_ = self._build(self._xy(lat[ok], lon[ok]), log_ppsf[ok])
+        self.dist_median_ = float(np.median(self._query(self.index_, lat[ok], lon[ok], sqft[ok])[:, 2]))
+        self.n_features_in_ = 3
+        return self
+
+    def fit_transform(self, X, y=None, **fit_params):
+        self.fit(X, y)
+        lat, lon, sqft = self._split(X)
+        ok, log_ppsf = self._usable(lat, lon, sqft, y)
+        out = np.empty((len(lat), 3))
+        folds = KFold(self.n_splits, shuffle=True, random_state=self.random_state)
+        for fit_idx, enc_idx in folds.split(lat):
+            use = fit_idx[ok[fit_idx]]
+            index = self._build(self._xy(lat[use], lon[use]), log_ppsf[use])
+            out[enc_idx] = self._query(index, lat[enc_idx], lon[enc_idx], sqft[enc_idx])
+        return out
+
+    def transform(self, X):
+        lat, lon, sqft = self._split(X)
+        return self._query(self.index_, lat, lon, sqft)
+
+    def get_feature_names_out(self, input_features=None):
+        return np.array(["knn_log_ppsf", "knn_log_value", "knn_dist_km"], dtype=object)
+
+
 def build_preprocessor(groups: dict[str, list[str]], scale: bool = True, clip_features: bool = True) -> ColumnTransformer:
     numeric_steps = [QuantileClipper()] if clip_features else []
     numeric_steps.append(SimpleImputer(strategy="median", add_indicator=True))
@@ -149,6 +236,8 @@ def build_preprocessor(groups: dict[str, list[str]], scale: bool = True, clip_fe
     ]
     if groups.get("comp"):
         transformers.append(("comp", CompPPSFEncoder(), groups["comp"]))
+    if groups.get("nearby"):
+        transformers.append(("nearby", NearbyCompsEncoder(), groups["nearby"]))
     transformers = [t for t in transformers if t[2]]
     return ColumnTransformer(transformers, remainder="drop", verbose_feature_names_out=True)
 
