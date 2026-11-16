@@ -121,3 +121,14 @@ def leakage_report(df: pd.DataFrame) -> pd.DataFrame:
             corr = df[[col, config.TARGET]].corr(method="spearman").iloc[0, 1]
         rows.append({"column": col, "spearman_corr_with_ClosePrice": corr, "verdict": "exclude"})
     return pd.DataFrame(rows)
+
+
+# Week 6 cumulative feature sets (flags for feature_columns). Order = complexity, used for tie-breaking.
+FEATURE_SETS = {
+    "Base (Week 4)": {},
+    "+ Ratios": {"ratios": True},
+    "+ School districts": {"ratios": True, "school": True},
+    "+ Job-center distance": {"ratios": True, "school": True, "distance": True},
+    "+ ZIP comps": {"ratios": True, "school": True, "distance": True, "comps": True},
+    "+ Nearby comps": {"ratios": True, "school": True, "distance": True, "comps": True, "nearby": True},
+}

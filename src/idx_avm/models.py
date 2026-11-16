@@ -1,4 +1,4 @@
-"""Weeks 5-6: model zoo, validation-month tuning, and test-month evaluation.
+"""Weeks 5-7: model zoo, validation-month tuning, and test-month evaluation.
 
 Every model shares the same leakage-safe preprocessing pipeline and is trained
 on log(ClosePrice). Hyperparameters are chosen on the validation month (the
@@ -10,14 +10,17 @@ from dataclasses import dataclass, field
 from itertools import product
 
 import pandas as pd
-from sklearn.ensemble import RandomForestRegressor
+import numpy as np
+from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestRegressor
+from sklearn.inspection import permutation_importance
+from sklearn.metrics import make_scorer
 from sklearn.linear_model import LinearRegression
 from sklearn.tree import DecisionTreeRegressor
 
 from . import config
 from .features import feature_columns
 from .metrics import regression_metrics
-from .preprocess import build_model_pipeline, feature_frame
+from .preprocess import build_model_pipeline, feature_frame, feature_list
 from .split import apply_outlier_filter, window_split
 
 # Small, explainable grids. Trees don't need scaling, but sharing one pipeline keeps comparisons fair.
@@ -31,6 +34,15 @@ MODEL_GRIDS = {
         RandomForestRegressor,
         [{"n_estimators": 150, "min_samples_leaf": leaf, "max_features": mf, "n_jobs": -1}
          for leaf, mf in product([2, 5], [0.33, 0.5])],
+    ),
+    # Week 7. scikit-learn's histogram gradient boosting (same algorithm family as LightGBM; ships
+    # with scikit-learn, so no OpenMP install is needed). Early stopping is off so the number of
+    # trees is a tuned setting, not a random internal split.
+    "Gradient Boosting": (
+        HistGradientBoostingRegressor,
+        [{"max_iter": n, "learning_rate": lr, "max_depth": d, "max_leaf_nodes": 127,
+          "min_samples_leaf": 20, "early_stopping": False}
+         for d, lr, n in product([6, 10, None], [0.05, 0.1], [500, 1000])],
     ),
 }
 
@@ -118,6 +130,31 @@ def feature_importance(result: FitResult, top: int = 15) -> pd.DataFrame:
     return grouped.head(top).rename("importance").reset_index().rename(columns={"index": "feature"})
 
 
+def params_from_label(model_name: str, label: str) -> dict:
+    """Map a saved trial label (e.g. from week5_tuning_trials.csv) back to its grid params."""
+    for params in MODEL_GRIDS[model_name][1]:
+        if _fmt(params) == label:
+            return params
+    raise KeyError(f"No {model_name} grid entry matches '{label}'")
+
+
+def _mdape(y_true, y_pred) -> float:
+    y_true = np.asarray(y_true, float)
+    return float(np.median(np.abs(np.asarray(y_pred, float) - y_true) / y_true) * 100)
+
+
+def permutation_mdape_importance(result: FitResult, n_rows: int = 5000, n_repeats: int = 3) -> pd.DataFrame:
+    """How much test MdAPE rises (in points) when each raw input is shuffled. Works for any model."""
+    test = result.test.sample(min(n_rows, len(result.test)), random_state=config.RANDOM_SEED)
+    X = feature_frame(test, result.groups)
+    scorer = make_scorer(_mdape, greater_is_better=False)
+    r = permutation_importance(result.model, X, test[config.TARGET], scoring=scorer,
+                               n_repeats=n_repeats, random_state=config.RANDOM_SEED)
+    return (pd.DataFrame({"feature": feature_list(result.groups), "mdape_increase_pts": r.importances_mean,
+                          "std": r.importances_std})
+            .sort_values("mdape_increase_pts", ascending=False).reset_index(drop=True))
+
+
 def _fmt(params: dict) -> str:
-    shown = {k: v for k, v in params.items() if k != "n_jobs"}
+    shown = {k: v for k, v in params.items() if k not in ("n_jobs", "early_stopping")}
     return ", ".join(f"{k}={v}" for k, v in shown.items()) or "defaults"

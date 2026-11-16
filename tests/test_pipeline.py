@@ -173,3 +173,68 @@ def test_select_model_prefers_simpler_config_within_noise():
     })
     assert select_model(results, ["Base", "+ More"], tol=0.10)["feature_set"] == "Base"      # 0.05 gain = noise
     assert select_model(results, ["Base", "+ More"], tol=0.01)["feature_set"] == "+ More"    # real gain wins
+
+
+def test_gradient_boosting_fits_in_shared_pipeline_and_beats_naive(data):
+    import numpy as np
+    from idx_avm.models import MODEL_GRIDS, fit_and_score, permutation_mdape_importance
+
+    df, _ = data
+    months = complete_months(df)
+    params = {**MODEL_GRIDS["Gradient Boosting"][1][0], "max_iter": 50}
+    r = fit_and_score(df, months[-1], 3, "Gradient Boosting", params, flags={})
+    test = r.test
+    naive = np.median(np.abs(test["ClosePrice"].median() - test["ClosePrice"]) / test["ClosePrice"]) * 100
+    assert r.metrics["MdAPE"] < naive
+    imp = permutation_mdape_importance(r, n_rows=300, n_repeats=1)
+    assert {"feature", "mdape_increase_pts"} <= set(imp.columns) and len(imp) > 5
+
+
+def test_gradient_boosting_is_more_complex_than_random_forest_for_ties():
+    import pandas as pd
+    from idx_avm.models import select_model
+
+    results = pd.DataFrame({"feature_set": ["Base", "Base"], "model": ["Random Forest", "Gradient Boosting"],
+                            "val_MdAPE": [7.70, 7.65]})
+    assert select_model(results, ["Base"], tol=0.10)["model"] == "Random Forest"        # within noise
+    assert select_model(results, ["Base"], tol=0.01)["model"] == "Gradient Boosting"    # clear win
+
+
+def test_params_round_trip_from_trial_labels():
+    from idx_avm.models import MODEL_GRIDS, _fmt, params_from_label
+
+    for name, (_, grid) in MODEL_GRIDS.items():
+        for p in grid:
+            assert params_from_label(name, _fmt(p)) == p
+
+
+def test_paired_bootstrap_detects_a_better_model_and_not_a_tie():
+    import numpy as np
+    from idx_avm.evaluation import paired_bootstrap
+
+    rng = np.random.default_rng(1)
+    y = rng.uniform(3e5, 2e6, 4000)
+    good = y * (1 + rng.normal(0, 0.05, y.size))
+    bad = y * (1 + rng.normal(0, 0.10, y.size))
+    r = paired_bootstrap(y, good, bad, n_boot=300)
+    assert r["mdape_diff_pts"] < 0 and r["ci_high"] < 0
+    tie = paired_bootstrap(y, good, good * (1 + rng.normal(0, 1e-4, y.size)), n_boot=300)
+    assert tie["ci_low"] <= 0 <= tie["ci_high"]
+
+
+def test_segment_breakdowns_use_shared_price_bands():
+    import numpy as np
+    import pandas as pd
+    from idx_avm.evaluation import accuracy_bands, band_labels, price_band_edges, segment_breakdowns
+
+    rng = np.random.default_rng(2)
+    n = 1000
+    y = rng.uniform(2e5, 3e6, n)
+    test = pd.DataFrame({"ClosePrice": y, "Predicted": y * 1.05, "CountyOrParish": "Orange",
+                         "LivingArea": rng.uniform(800, 5000, n), "PropertyAge": rng.uniform(0, 90, n)})
+    edges = price_band_edges(y)
+    seg = segment_breakdowns(test, edges, band_labels(y, edges))
+    band = seg[seg["segment_type"] == "Price band (sale price)"]
+    assert len(band) == 5 and band["n"].sum() == n
+    assert np.allclose(band["median_signed_error_pct"], 5.0)
+    assert accuracy_bands(y, y * 1.04)["within_5pct"] == 100.0

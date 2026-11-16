@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from idx_avm import config  # noqa: E402
-from idx_avm.features import add_distance_features, add_ratio_features, feature_columns  # noqa: E402
+from idx_avm.features import FEATURE_SETS, add_distance_features, add_ratio_features, feature_columns  # noqa: E402
 from idx_avm.load import load_processed  # noqa: E402
 
 # feature -> (description, how it's built)
@@ -64,14 +64,7 @@ EXCLUDED = [
     ("School-district demographics (race/ethnicity shares)", "Fair-housing risk; only district identity is used"),
 ]
 
-SETS = [
-    ("Base (Week 4)", {}),
-    ("+ Ratios", {"ratios": True}),
-    ("+ School districts", {"ratios": True, "school": True}),
-    ("+ Job-center distance", {"ratios": True, "school": True, "distance": True}),
-    ("+ ZIP comps", {"ratios": True, "school": True, "distance": True, "comps": True}),
-    ("+ Nearby comps", {"ratios": True, "school": True, "distance": True, "comps": True, "nearby": True}),
-]
+SETS = list(FEATURE_SETS.items())
 
 
 def raw_features(groups: dict) -> list[str]:

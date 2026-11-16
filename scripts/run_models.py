@@ -1,4 +1,4 @@
-"""Weeks 5-6: model comparison and feature engineering.
+"""Weeks 5-6: model comparison and feature engineering (gradient boosting is Week 7).
 
 Week 5: tune Decision Tree and Random Forest on the validation month, then
         compare test-month metrics against the Linear Regression baseline.
@@ -17,30 +17,20 @@ import json
 import sys
 from pathlib import Path
 
-import joblib
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from idx_avm import config  # noqa: E402
-from idx_avm.baseline import breakdowns, residual_summary  # noqa: E402
+from idx_avm.artifacts import save_best_model, save_tuned_params  # noqa: E402
+from idx_avm.features import FEATURE_SETS  # noqa: E402
 from idx_avm.models import (  # noqa: E402
-    MODEL_GRIDS, NOISE_TOLERANCE_PTS, feature_importance, fit_and_score, select_model, tune_on_validation,
+    NOISE_TOLERANCE_PTS, feature_importance, fit_and_score, select_model, tune_on_validation,
 )
 from idx_avm.pipeline import prepare_dataset  # noqa: E402
-from idx_avm.preprocess import feature_list  # noqa: E402
 
-MODELS_DIR = config.PROJECT_ROOT / "models"
-
-# Cumulative: each set adds to the one before it. Order = complexity, used for tie-breaking.
-FEATURE_SETS = {
-    "Base (Week 4)": {},
-    "+ Ratios": {"ratios": True},
-    "+ School districts": {"ratios": True, "school": True},
-    "+ Job-center distance": {"ratios": True, "school": True, "distance": True},
-    "+ ZIP comps": {"ratios": True, "school": True, "distance": True, "comps": True},
-    "+ Nearby comps": {"ratios": True, "school": True, "distance": True, "comps": True, "nearby": True},
-}
+# Week 5-6 compare the three classic models; gradient boosting is Week 7 (run_advanced_models.py).
+WEEK5_MODELS = ["Linear Regression", "Decision Tree", "Random Forest"]
 
 
 def main() -> None:
@@ -54,7 +44,7 @@ def main() -> None:
     # ---------------- Week 5: tune on validation, score once on test (base features)
     print("\nWeek 5: tuning on the validation month")
     best_params, trials, week5 = {}, [], []
-    for name in MODEL_GRIDS:
+    for name in WEEK5_MODELS:
         params, t = tune_on_validation(df, test_month, x, name, flags={})
         best_params[name] = params
         trials.append(t)
@@ -70,7 +60,7 @@ def main() -> None:
     print("\nWeek 6: feature sets")
     rows, fitted = [], {}
     for set_name, flags in FEATURE_SETS.items():
-        for name in MODEL_GRIDS:
+        for name in WEEK5_MODELS:
             val = fit_and_score(df, val_month, x, name, best_params[name], flags, set_name)
             test = fit_and_score(df, test_month, x, name, best_params[name], flags, set_name)
             fitted[(name, set_name)] = test
@@ -100,20 +90,15 @@ def main() -> None:
 
     # Importances from the Random Forest on the full feature set (most informative view of Week 6).
     importances = feature_importance(fitted[("Random Forest", list(FEATURE_SETS)[-1])])
-    parts = breakdowns(best.test)
-    resid = residual_summary(best.test)
 
     # ---------------- Save artifacts (all git-ignored)
     pd.concat(trials).to_csv(out / "week5_tuning_trials.csv", index=False)
     week5.to_csv(out / "week5_model_comparison.csv", index=False)
     week6.to_csv(out / "week6_feature_sets.csv", index=False)
-    backtest.to_csv(out / "best_model_backtest.csv", index=False)
     importances.to_csv(out / "rf_feature_importance.csv", index=False)
-    parts["by_price_band"].to_csv(out / "best_model_by_price_band.csv")
-    parts["by_county"].to_csv(out / "best_model_by_county.csv")
-    pred_cols = [config.TARGET, "Predicted", "CountyOrParish", "City", "LivingArea"]
-    best.test[pred_cols].to_csv(out / "best_model_test_predictions.csv", index=False)
+    save_tuned_params(best_params)
     summary = {
+        "stage": "Weeks 5-6",
         "test_month": str(test_month), "validation_month": str(val_month), "n_train_months": x,
         "selected_model": best_key[0], "selected_feature_set": best_key[1],
         "selection_rule": f"simplest configuration within {NOISE_TOLERANCE_PTS} pts of the lowest validation MdAPE",
@@ -121,31 +106,12 @@ def main() -> None:
         "selected_val_MdAPE": best_row["val_MdAPE"],
         "feature_set_order": list(FEATURE_SETS),
         "selected_params": {k: v for k, v in best_params[best_key[0]].items() if k != "n_jobs"},
-        "test_metrics": best.metrics, "accuracy_bands": resid,
         "baseline_test_metrics": week5.loc[week5["model"] == "Linear Regression"].iloc[0].to_dict(),
     }
-    (out / "best_model_metrics.json").write_text(json.dumps(summary, indent=2, default=str))
-
-    train = df[df["CloseMonth"].isin([test_month - i for i in range(x, 0, -1)])]
-    bundle = {
-        "model": best.model,
-        "groups": best.groups,
-        "features": feature_list(best.groups),
-        "model_name": best_key[0],
-        "feature_set": best_key[1],
-        "defaults": train[best.groups["numeric"]].median(numeric_only=True).to_dict(),
-        "options": {
-            "CountyOrParish": sorted(train["CountyOrParish"].dropna().unique().tolist()),
-            "city_by_county": train.groupby("CountyOrParish")["City"].agg(lambda s: sorted(s.dropna().unique())).to_dict(),
-            "zip_by_city": train.groupby("City")["PostalCode"].agg(lambda s: sorted(s.dropna().unique())).to_dict(),
-            "latlon_by_zip": train.groupby("PostalCode")[["Latitude", "Longitude"]].median().round(5).to_dict("index"),
-        },
-        "test_month": str(test_month),
-        "metrics": best.metrics,
-    }
-    MODELS_DIR.mkdir(exist_ok=True)
-    joblib.dump(bundle, MODELS_DIR / "best_model.joblib", compress=3)
-    print(f"\nSaved results to {out} and model to {MODELS_DIR / 'best_model.joblib'}")
+    # The Week 6 decision is kept on its own; Week 7 may replace best_model.* with a better model.
+    summary = save_best_model(best, backtest, summary, df, test_month, x)
+    (out / "week6_selection.json").write_text(json.dumps(summary, indent=2, default=str))
+    print(f"\nSaved results to {out} and model to models/best_model.joblib")
 
 
 if __name__ == "__main__":

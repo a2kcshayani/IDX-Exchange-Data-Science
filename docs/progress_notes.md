@@ -1,6 +1,6 @@
-# Progress Notes (Weeks 1–6)
+# Progress Notes (Weeks 1–8)
 
-_Last updated after the Week 6 completion pass (nearby comps, job-center distance, noise-aware model selection)._
+_Last updated after Weeks 7–8 (gradient boosting, evaluation expansion)._
 
 A running list of what changed, what looked wrong and how it was handled, and what's still open.
 Numbers are from the April 2026 test month (12,337 sales) unless noted.
@@ -18,22 +18,24 @@ Stop it with Ctrl+C. The app is bound to `localhost`, so only this computer can 
 
 ## Updates since the Week 4 baseline
 
-| | Week 4 baseline | Weeks 5–6 selected model |
-|---|---|---|
-| Model | Linear Regression | Random Forest (Week 4 base features) |
-| MdAPE (headline) | 11.11% | **7.78%** |
-| R² | 0.811 | **0.885** |
-| MAE | $212,780 | $161,694 |
-| Within 10% of sale price | 45.7% | **59.4%** |
-| Luxury homes ($1.67M+) MdAPE | 16.4% | **12.1%** |
+| | Week 4 baseline | Week 6 pick | Week 7 selected model |
+|---|---|---|---|
+| Model | Linear Regression | Random Forest | **Gradient Boosting** (base features) |
+| MdAPE (headline) | 11.11% | 7.78% | **7.50%** |
+| R² | 0.811 | 0.885 | **0.904** |
+| MAE | $212,780 | $161,694 | **$150,331** |
+| Within 10% of sale price | 45.7% | 59.4% | **61.0%** |
+| Luxury homes ($1.67M+) MdAPE | 16.4% | 12.1% | **10.8%** |
+| Median bias | +0.1% | −1.0% | **−0.2%** |
+| Saved model | small | 349 MB | **6.6 MB** |
 
-- Week 5: the Random Forest beats the baseline by 3.3 MdAPE points (30%). The Decision Tree is in between, at 9.55%.
-- Week 6, six cumulative feature sets: ratios, school districts (spatial join), job-center distance, ZIP comps, and
-  nearby comps (10 closest prior sales). Nearby comps are the strongest: Linear Regression 11.11% → 9.61%, and the Random Forest
-  reaches the best R², 0.902. Typical error for tree models is unchanged within noise.
-- Selection rule: an addition must beat the best by more than 0.10 validation points, or the simpler setup wins.
-  So the selected model is the base Random Forest. The runner-up, + job-center distance, was 0.08 points better: a tie.
-- Dashboard: Model Comparison and Feature Engineering pages. The estimator uses the selected model.
+- Week 5: Random Forest beats the baseline by 30%. Decision Tree is in between, at 9.55%.
+- Week 6: nearby comps are the strongest added feature. Ties go to the simpler setup (0.10-point noise rule).
+- Week 7: gradient boosting (scikit-learn `HistGradientBoostingRegressor`), 12 settings tuned on the validation month.
+  It beats the Random Forest by 0.37 validation points, so it's selected. Backtest: 7.66% / 7.35% / 7.50%.
+- Week 8: `metrics_summary.csv`, error by price band, county, size and age, and a paired bootstrap. The gain over the Random Forest
+  (−0.28 points, 95% CI −0.44 to −0.11) is bigger than noise.
+- Dashboard: new Gradient Boosting and Evaluation pages. The estimator now loads in about a second.
 
 ## Issues found and how they were handled
 
@@ -44,27 +46,25 @@ Stop it with Ctrl+C. The app is bound to `localhost`, so only this computer can 
 | Leakage audit showed ListPrice correlation as 0.25 | Understated the leak; outliers swamp Pearson correlation | Switched to Spearman: ListPrice 0.993, OriginalListPrice 0.986 |
 | `FireplacesTotal` empty in every training row | Broke median imputation | Empty columns are skipped automatically |
 | School district file includes race/ethnicity shares | Fair-housing risk if used for pricing | Excluded; only district identity is used |
+| LightGBM / XGBoost wouldn't load (macOS needs a system OpenMP library) | Week 7 blocked on extra system setup | Used scikit-learn's histogram gradient boosting (same algorithm family), no extra installs |
 | Streamlit listened on the whole network by default | Anyone on the same Wi-Fi could view IDX data summaries | Bound to `localhost` in `.streamlit/config.toml` and the launch script |
 
 ## Things to look into
 
-1. **Comps raise R² but not typical error for the Random Forest** (R² 0.885 → 0.902, MdAPE flat). They mostly fix big misses.
-   If IDX cares about tail risk (lending exposure), consider choosing on RMSE/R² as well as MdAPE. Next ideas: weight
-   recent sales more, and compare like-for-like homes (similar size and age) instead of just the nearest.
-2. **Selection is sensitive to the tie rule.** With a 0.10-point tolerance the base Random Forest wins. Without it, + job-center
-   distance would win (test MdAPE 7.70% vs. 7.78%). Re-check after Week 7, ideally on May 2026 data.
-3. **Luxury homes are still the weakest band** (12.1% MdAPE versus 6–7% for mid-priced homes). Trees can't predict
-   above the highest training price, so check how the $5M+ tail behaves.
-4. **Small signed bias:** the median prediction is 1.0% below the sale price. Check whether this is the market rising
-   between the training window and the test month (an argument for a time-trend feature).
-5. **Model file size:** the saved Random Forest is 353 MB, so the estimator's first load takes about 15 seconds. Week 9: fewer or shallower
-   trees, or gradient boosting (much smaller).
-6. **The test month has been viewed many times.** Every decision so far was made on validation months, but after Week 7, add
-   May 2026 data when it's released and score the final model on it fresh.
-7. **Notebooks have no saved results.** Run 01–04b in Jupyter and fill in the "Findings" cells before presenting.
+1. **Bay Area is the weak spot.** San Mateo (11.7%) and Alameda (11.1%) have the highest error, and are the one place the Random Forest
+   beat gradient boosting. Adding nearby comps brings them to 10.0% / 9.8%. Worth a closer look: dense, expensive, fast-moving markets.
+2. **Typical error vs. big misses.** Gradient boosting + all features has the best R² (0.915) and MAPE, but its MdAPE edge over the
+   base version (0.12 points) is within noise, so the simpler model is selected. If IDX cares more about tail risk, switch to it.
+3. **Luxury, very large and older homes** are still the hardest (10.8%, 10.7%, 9.4% MdAPE). There are fewer true comparables. Next ideas:
+   like-for-like comps (similar size and age), and weighting recent sales more.
+4. **Tuning sits at the edge of the grid** (most trees, highest learning rate). Try 1,500–2,000 trees, or a lower rate with more trees.
+5. **The training window (18 months) was chosen with the linear baseline.** Re-check it with gradient boosting.
+6. **The test month has been viewed many times.** Score the final model on May 2026 or later data if it's
+   on the FTP: download the new `CRMLSSold*.csv` files into `data/raw/` and run `bash scripts/run_dashboard.sh --rebuild`.
+7. **Notebooks have no saved results.** Run 01–06 in Jupyter and fill in the "Takeaways" cells before presenting.
 8. **Confirm with IDX** that publishing aggregate metrics in the public README is fine. No row-level data is in the repo.
 
-## Next up (Week 7)
+## Next up (Weeks 9–10)
 
-Gradient boosting (LightGBM or XGBoost), with light tuning of depth, learning rate and number of trees on the validation month,
-compared against the Random Forest in the same table.
+Week 9's Streamlit estimator already exists (Price Estimator page). Remaining: polish, then the Week 10 README pass
+(dataset source, preprocessing, models tested, best results, how to re-run).

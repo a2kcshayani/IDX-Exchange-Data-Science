@@ -66,7 +66,9 @@ step() {  # step <label> <marker file> <script>
 }
 step "Week 3 cleaned data + split"       data/processed/split_metadata.json  scripts/run_preprocessing.py
 step "Week 4 baseline model"             models/baseline_linear.joblib       scripts/run_baseline.py
-step "Weeks 5-6 model comparison (~10 min)" models/best_model.joblib         scripts/run_models.py
+step "Weeks 5-6 model comparison (~10 min)" data/processed/week6_selection.json scripts/run_models.py
+step "Week 7 gradient boosting (~15 min)" data/processed/week7_model_comparison.csv scripts/run_advanced_models.py
+step "Week 8 evaluation (~5 min)"        data/processed/metrics_summary.csv  scripts/run_evaluation.py
 
 [[ "$MODE" == "--check" ]] && exit 0
 

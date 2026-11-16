@@ -1,9 +1,7 @@
 """Streamlit app presenting the California close-price AVM project.
 
-Run from the repo root after the pipeline scripts:
-    python scripts/run_preprocessing.py
-    python scripts/run_baseline.py
-    streamlit run app/app.py
+Run from the repo root:
+    bash scripts/run_dashboard.sh   # builds any missing pipeline outputs, then launches
 
 Reads only local, git-ignored artifacts (data/processed/, models/).
 """
@@ -40,8 +38,11 @@ FEATURE_LABELS = {
     "CloseMonthCos": "Season (cos)", "DistToJobCenterKm": "Distance to job center",
     "knn_log_ppsf": "Nearby comps $/sq ft (10 closest sales)", "knn_log_value": "Nearby comps value",
     "knn_dist_km": "Distance to nearby comps",
+    "FireplacesTotal": "Fireplaces", "FireplaceYN": "Fireplace", "AttachedGarageYN": "Attached garage",
+    "NewConstructionYN": "New construction",
 }
-MODEL_COLORS = {"Linear Regression": "#94a3b8", "Decision Tree": "#60a5fa", "Random Forest": "#2563eb"}
+MODEL_COLORS = {"Linear Regression": "#94a3b8", "Decision Tree": "#60a5fa", "Random Forest": "#2563eb",
+                "Gradient Boosting": "#ea580c"}
 ACCENT = "#2563eb"
 
 st.set_page_config(page_title="California Home Price Model", page_icon="🏠", layout="wide")
@@ -150,9 +151,11 @@ def page_overview() -> None:
             ("2. Clean", "Remove invalid prices, duplicates and impossible records, with a logged count at each step"),
             ("3. Split by time", f"Train on {len(meta['train_months'])} months, test on {meta['test_month']} (never shuffled)"),
             ("4. Preprocess", "Clip outliers, impute, encode, scale. All fit on training data only"),
-            ("5. Model", "Linear Regression baseline (Week 4), then Decision Tree and Random Forest (Week 5)"),
+            ("5. Model", "Linear Regression baseline (Week 4), Decision Tree and Random Forest (Week 5)"),
             ("6. Features", "Bed/bath ratios, school districts via spatial join, comps from prior sales (Week 6)"),
-            ("7. Evaluate", "MdAPE (headline), MAPE, R², MAE, plus a backtest on 3 months"),
+            ("7. Boost", "Gradient boosting tuned on the validation month, compared in the same table (Week 7)"),
+            ("8. Evaluate", "MdAPE (headline), MAPE, R², MAE, RMSE by price band, county, size and age, "
+                            "3-month backtest, bootstrap significance check (Week 8)"),
         ],
         columns=["Step", "What happens"],
     )
@@ -456,11 +459,12 @@ Each feature set **adds** to the one before it, and every model is re-trained on
         st.dataframe(fs.style.format({c: "{:.3f}" for c in fs.columns if c.startswith(("val_", "test_"))}),
                      hide_index=True, width="stretch")
 
-    if (PROCESSED / "best_model_metrics.json").exists():
-        best = read_json("best_model_metrics.json")
+    sel_file = "week6_selection.json" if (PROCESSED / "week6_selection.json").exists() else "best_model_metrics.json"
+    if (PROCESSED / sel_file).exists():
+        best = read_json(sel_file)
         st.success(
-            f"**Selected model: {best['selected_model']} with '{best['selected_feature_set']}'**, chosen by validation-month "
-            f"MdAPE, not by the test month. Test MdAPE **{best['test_metrics']['MdAPE']:.2f}%**, R² "
+            f"**Week 6 selection: {best['selected_model']} with '{best['selected_feature_set']}'**, chosen by "
+            f"validation-month MdAPE, not by the test month (Week 7 revisits this). Test MdAPE **{best['test_metrics']['MdAPE']:.2f}%**, R² "
             f"**{best['test_metrics']['R2']:.3f}**, versus the baseline's "
             f"{best['baseline_test_metrics']['MdAPE']:.2f}% and {best['baseline_test_metrics']['R2']:.3f}."
         )
@@ -507,6 +511,241 @@ def _school_rows(train_mtime: float, test_mtime: float) -> pd.DataFrame:
     from idx_avm.geo import assign_school_districts
 
     return assign_school_districts(_cleaned_rows(train_mtime, test_mtime))
+
+
+SHORT_PARAMS = {"max_iter": "trees", "learning_rate": "lr", "max_depth": "depth", "max_leaf_nodes": "leaves",
+                "min_samples_leaf": "min leaf", "max_features": "features/split", "n_estimators": "trees"}
+EVAL_COLORS = ["#94a3b8", "#2563eb", "#ea580c", "#a855f7"]
+
+
+def _short(params: pd.Series) -> pd.Series:
+    for k, v in SHORT_PARAMS.items():
+        params = params.str.replace(k, v, regex=False)
+    return params
+
+
+def page_advanced() -> None:
+    st.title("Gradient Boosting (Week 7)")
+    if not _need(PROCESSED / "week7_model_comparison.csv", PROCESSED / "week7_tuning_trials.csv",
+                 PROCESSED / "week7_gb_feature_sets.csv"):
+        st.info("Run `python scripts/run_advanced_models.py` (or `bash scripts/run_dashboard.sh`).")
+        return
+    comp = read_csv("week7_model_comparison.csv")
+    st.markdown(
+        "**Gradient boosting** builds trees one after another, and each new tree corrects the errors of the ones "
+        "before it. It was tuned exactly like Week 5: depth, learning rate and number of trees were chosen on the "
+        "**validation month**, then the **test month** was scored once. It uses scikit-learn's histogram gradient "
+        "boosting, the same algorithm family as LightGBM."
+    )
+    base = comp.set_index("model").loc["Linear Regression"]
+    cols = st.columns(len(comp))
+    for col, (_, r) in zip(cols, comp.iterrows()):
+        delta = None if r["model"] == "Linear Regression" else f"{r['MdAPE'] - base['MdAPE']:.2f} pts vs. baseline"
+        col.metric(r["model"], f"{r['MdAPE']:.2f}% MdAPE", delta=delta, delta_color="inverse")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**Typical error (lower is better)**")
+        fig = px.bar(comp, x="model", y="MdAPE", color="model", color_discrete_map=MODEL_COLORS,
+                     text=comp["MdAPE"].round(2).astype(str) + "%")
+        fig.update_layout(height=340, showlegend=False, xaxis_title="", yaxis_title="Test MdAPE (%)")
+        st.plotly_chart(fig, width="stretch")
+    with c2:
+        st.markdown("**Variance explained (higher is better)**")
+        fig = px.bar(comp, x="model", y="R2", color="model", color_discrete_map=MODEL_COLORS, text=comp["R2"].round(3))
+        fig.update_layout(height=340, showlegend=False, xaxis_title="", yaxis_title="Test R²", yaxis_range=[0, 1])
+        st.plotly_chart(fig, width="stretch")
+
+    st.subheader("Baseline vs. advanced models, same table (base features, test month)")
+    show = comp[["model", "params", "val_MdAPE", "MdAPE", "MAPE", "R2", "MAE", "RMSE", "MdAPE_vs_baseline_pct", "fit_seconds"]]
+    show = show.assign(params=_short(show["params"])).rename(columns={
+        "model": "Model", "params": "Chosen settings", "val_MdAPE": "Validation MdAPE",
+        "MdAPE_vs_baseline_pct": "MdAPE vs. baseline", "fit_seconds": "Train time (s)"})
+    st.dataframe(show.style.format({"Validation MdAPE": "{:.2f}%", "MdAPE": "{:.2f}%", "MAPE": "{:.2f}%", "R2": "{:.3f}",
+                                    "MAE": "${:,.0f}", "RMSE": "${:,.0f}", "MdAPE vs. baseline": "{:+.0f}%",
+                                    "Train time (s)": "{:.1f}"}),
+                 hide_index=True, width="stretch")
+
+    st.subheader("Tuning: 12 settings on the validation month")
+    trials = read_csv("week7_tuning_trials.csv").copy()
+    trials["setting"] = _short(trials["params"])
+    best_i = trials["MdAPE"].idxmin()
+    trials["chosen"] = np.where(trials.index == best_i, "Chosen", "Tried")
+    trials["label"] = trials["MdAPE"].round(2).astype(str) + "%"
+    trials = trials.sort_values("MdAPE", ascending=False)
+    fig = px.bar(trials, x="MdAPE", y="setting", color="chosen", orientation="h", text="label",
+                 color_discrete_map={"Chosen": MODEL_COLORS["Gradient Boosting"], "Tried": "#cbd5e1"})
+    fig.update_yaxes(categoryorder="array", categoryarray=trials["setting"].tolist())
+    fig.update_layout(height=460, yaxis_title="", legend_title="",
+                      xaxis_title=f"Validation MdAPE (%) · month {trials['val_month'].iloc[0]}")
+    st.plotly_chart(fig, width="stretch")
+    st.caption("More trees, a higher learning rate and deeper trees all lowered validation error, and the winner sits at the "
+               "edge of this grid, so a slightly larger search may help. Settings were picked on validation only, so the "
+               "test month stays an honest check.")
+
+    st.subheader("Does gradient boosting use the Week 6 features better?")
+    gb = read_csv("week7_gb_feature_sets.csv")
+    fs = pd.concat([read_csv("week6_feature_sets.csv"), gb.drop(columns="fit_seconds")], ignore_index=True)
+    order = list(dict.fromkeys(gb["feature_set"]))
+    fs = fs[fs["model"].isin(["Linear Regression", "Random Forest", "Gradient Boosting"])]
+    metric = st.radio("Show", ["Test MdAPE", "Test R²", "Validation MdAPE"], horizontal=True)
+    ycol = {"Test MdAPE": "test_MdAPE", "Test R²": "test_R2", "Validation MdAPE": "val_MdAPE"}[metric]
+    fig = px.line(fs, x="feature_set", y=ycol, color="model", markers=True, color_discrete_map=MODEL_COLORS,
+                  category_orders={"feature_set": order})
+    fig.update_layout(height=380, xaxis_title="", yaxis_title=metric, legend_title="")
+    st.plotly_chart(fig, width="stretch")
+
+    if (PROCESSED / "best_model_metrics.json").exists():
+        best = read_json("best_model_metrics.json")
+        if best.get("stage") == "Week 7":
+            prev = best.get("previous_selection") or {}
+            low = best["lowest_val"]
+            st.success(
+                f"**Selected model: {best['selected_model']} with '{best['selected_feature_set']}'** "
+                f"(validation MdAPE {best['selected_val_MdAPE']:.2f}%). Test MdAPE **{best['test_metrics']['MdAPE']:.2f}%**, "
+                f"R² **{best['test_metrics']['R2']:.3f}**, {best['accuracy_bands']['within_10pct']:.1f}% of homes within 10%."
+            )
+            st.caption(
+                f"Same rule as Week 6: the {best['selection_rule']}. Lowest validation MdAPE overall: {low['model']} with "
+                f"'{low['feature_set']}' ({low['val_MdAPE']:.2f}%). Previous pick: {prev.get('selected_model')} with "
+                f"'{prev.get('selected_feature_set')}' (validation {prev.get('selected_val_MdAPE', float('nan')):.2f}%, "
+                f"{prev.get('model_file_mb')} MB saved model). New saved model: {best.get('model_file_mb')} MB."
+            )
+        if (PROCESSED / "best_model_backtest.csv").exists():
+            bt = read_csv("best_model_backtest.csv")
+            st.markdown("**Backtest of the selected model (3 test months, each trained on the 18 months before it)**")
+            st.dataframe(bt[["test_month", "MdAPE", "MAPE", "R2", "MAE", "n"]].style.format(
+                {"MdAPE": "{:.2f}%", "MAPE": "{:.2f}%", "R2": "{:.3f}", "MAE": "${:,.0f}", "n": "{:,}"}),
+                hide_index=True, width="stretch")
+
+    if (PROCESSED / "best_model_permutation_importance.csv").exists():
+        st.subheader("What the selected model relies on")
+        imp = read_csv("best_model_permutation_importance.csv").head(12).copy()
+        imp["feature"] = imp["feature"].map(FEATURE_LABELS).fillna(imp["feature"])
+        fig = px.bar(imp.sort_values("mdape_increase_pts"), x="mdape_increase_pts", y="feature", orientation="h",
+                     error_x="std", color_discrete_sequence=[MODEL_COLORS["Gradient Boosting"]])
+        fig.update_layout(height=440, xaxis_title="Rise in test MdAPE when this input is shuffled (pts)", yaxis_title="")
+        st.plotly_chart(fig, width="stretch")
+        st.caption("Permutation importance: shuffle one input across 5,000 test homes and measure how much worse the "
+                   "typical error gets. Unlike tree impurity scores, it works for any model and is in MdAPE points.")
+
+    st.markdown(
+        """
+| Model | Strengths | Weaknesses |
+|---|---|---|
+| **Random Forest** | Averages independent deep trees; robust with little tuning | Large saved model; slower to load and predict |
+| **Gradient Boosting** | Each tree fixes the last one's errors, so it captures fine location × size effects; small, fast model | More settings to tune; can overfit if trees are too deep or too many |
+"""
+    )
+
+
+def page_evaluation() -> None:
+    st.title("Evaluation (Week 8)")
+    files = ["metrics_summary.csv", "eval_segments.csv", "eval_significance.csv", "eval_insights.json", "eval_backtest.csv"]
+    if not _need(*(PROCESSED / f for f in files)):
+        st.info("Run `python scripts/run_evaluation.py` (or `bash scripts/run_dashboard.sh`).")
+        return
+    summary = read_csv("metrics_summary.csv")
+    seg = read_csv("eval_segments.csv")
+    sig = read_csv("eval_significance.csv")
+    notes = read_json("eval_insights.json")
+    bt = read_csv("eval_backtest.csv")
+    labels = summary["label"].tolist()
+    colors = dict(zip(labels, EVAL_COLORS))
+    sel = notes["selected"]
+
+    st.markdown(
+        f"Every finalist scored **the same way on the same {int(summary['n'].iloc[0]):,} homes** from "
+        f"{notes['test_month']}, plus two earlier months. R² alone can hide a lot, so this page adds "
+        "**MAPE and MdAPE**, accuracy bands, and error by price band and geography."
+    )
+    with st.expander("What each metric tells you"):
+        st.markdown(
+            """
+| Metric | Meaning | Why it's here |
+|---|---|---|
+| **MdAPE** | Median % error: half of homes are closer than this | Headline. Not moved by a few wild misses |
+| **MAPE** | Average % error | Pulled up by big misses, so the gap to MdAPE shows how heavy the tail is |
+| **R²** | Share of price variation explained | Dominated by expensive homes, where dollar errors are largest |
+| **MAE / RMSE** | Average dollar miss / dollar miss weighted toward big ones | Dollar terms for stakeholders; RMSE is the tail-risk view (lending exposure) |
+| **Within 10%** | Share of homes estimated within 10% of the sale price | Common AVM "hit rate" |
+"""
+        )
+
+    st.subheader("metrics_summary.csv")
+    show = summary[["label", "feature_set", "MdAPE", "MAPE", "R2", "MAE", "RMSE", "within_10pct",
+                    "median_signed_error_pct", "backtest_MdAPE_min", "backtest_MdAPE_max", "MdAPE_vs_baseline_pct"]]
+    show = show.rename(columns={"label": "Model", "feature_set": "Features", "within_10pct": "Within 10%",
+                                "median_signed_error_pct": "Median bias", "backtest_MdAPE_min": "Backtest MdAPE min",
+                                "backtest_MdAPE_max": "Backtest MdAPE max", "MdAPE_vs_baseline_pct": "MdAPE vs. baseline"})
+    st.dataframe(show.style.format({
+        "MdAPE": "{:.2f}%", "MAPE": "{:.2f}%", "R2": "{:.3f}", "MAE": "${:,.0f}", "RMSE": "${:,.0f}",
+        "Within 10%": "{:.1f}%", "Median bias": "{:+.1f}%", "Backtest MdAPE min": "{:.2f}%",
+        "Backtest MdAPE max": "{:.2f}%", "MdAPE vs. baseline": "{:+.0f}%"}), hide_index=True, width="stretch")
+
+    st.subheader("Key findings")
+    # Escape "$" so Streamlit markdown doesn't read price ranges as LaTeX.
+    st.markdown("\n".join(f"- {n}".replace("$", "\\$") for n in notes["insights"]))
+
+    st.subheader("Which price bands perform better?")
+    band = seg[seg["segment_type"] == "Price band (sale price)"]
+    c1, c2 = st.columns(2)
+    with c1:
+        fig = px.bar(band, x="segment", y="MdAPE", color="label", barmode="group", color_discrete_map=colors,
+                     category_orders={"label": labels})
+        fig.update_layout(height=380, xaxis_title="Sale-price quintile (test month)", yaxis_title="MdAPE (%)",
+                          legend_title="", legend=dict(orientation="h", y=1.02, yanchor="bottom"))
+        st.plotly_chart(fig, width="stretch")
+    with c2:
+        b2 = seg[(seg["label"] == sel) & seg["segment_type"].str.startswith("Price band")]
+        fig = px.bar(b2, x="segment", y="median_signed_error_pct", color="segment_type", barmode="group",
+                     color_discrete_sequence=[MODEL_COLORS["Gradient Boosting"], "#fdba74"])
+        fig.update_layout(height=380, xaxis_title="Price quintile", yaxis_title="Median signed error (%)",
+                          legend_title="", legend=dict(orientation="h", y=1.02, yanchor="bottom"))
+        fig.add_hline(y=0, line_color="#64748b")
+        st.plotly_chart(fig, width="stretch")
+    st.caption("Left: typical error by sale-price band for every model. Right: bias of the selected model. Above 0 = "
+               "over-estimate. Grouping by sale price makes cheap homes look over-valued and expensive homes under-valued "
+               "(regression to the middle); grouping by the model's own estimate is what a user would see.")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**Accuracy bands**")
+        acc = summary.melt(id_vars="label", value_vars=["within_5pct", "within_10pct", "within_20pct"],
+                           var_name="band", value_name="share")
+        acc["band"] = acc["band"].map({"within_5pct": "Within 5%", "within_10pct": "Within 10%", "within_20pct": "Within 20%"})
+        fig = px.bar(acc, x="band", y="share", color="label", barmode="group", color_discrete_map=colors,
+                     category_orders={"label": labels}, text=acc["share"].round(0).astype(int).astype(str) + "%")
+        fig.update_layout(height=360, xaxis_title="", yaxis_title="% of test homes", legend_title="", showlegend=False)
+        st.plotly_chart(fig, width="stretch")
+    with c2:
+        st.markdown("**Stable across months?**")
+        fig = px.line(bt, x="test_month", y="MdAPE", color="label", markers=True, color_discrete_map=colors,
+                      category_orders={"label": labels})
+        fig.update_layout(height=360, xaxis_title="Test month", yaxis_title="MdAPE (%)", legend_title="", showlegend=False)
+        fig.update_xaxes(type="category")
+        st.plotly_chart(fig, width="stretch")
+
+    st.subheader("Error by segment")
+    kinds = [k for k in dict.fromkeys(seg["segment_type"]) if not k.startswith("Price band (sale")]
+    kind = st.selectbox("Break down by", kinds)
+    part = seg[seg["segment_type"] == kind]
+    wide = part.pivot_table(index="segment", columns="label", values="MdAPE", sort=False)[labels]
+    n = part[part["label"] == sel].set_index("segment")["n"]
+    wide.insert(0, "Test sales", n)
+    st.dataframe(wide.style.format("{:.2f}%", subset=labels).format("{:,.0f}", subset=["Test sales"]), width="stretch")
+    st.caption("MdAPE per segment and model. Counties need 100+ test sales; other groups need 30+.")
+
+    st.subheader("Is the improvement bigger than noise?")
+    s = sig.rename(columns={"model_a": "Model", "model_b": "Compared with", "mdape_diff_pts": "MdAPE gap (pts)",
+                            "ci_low": "95% CI low", "ci_high": "95% CI high",
+                            "homes_a_closer_pct": "Homes where it's closer"})
+    st.dataframe(s[["Model", "Compared with", "MdAPE gap (pts)", "95% CI low", "95% CI high", "Homes where it's closer"]]
+                 .style.format({"MdAPE gap (pts)": "{:+.2f}", "95% CI low": "{:+.2f}", "95% CI high": "{:+.2f}",
+                                "Homes where it's closer": "{:.0f}%"}), hide_index=True, width="stretch")
+    st.caption("Paired bootstrap: re-draw the test month's homes 2,000 times and recompute both models' MdAPE on the "
+               "same draw. If the whole 95% interval is below 0, the selected model's edge isn't luck of the sample "
+               "(best-practices §09).")
 
 
 def page_estimator() -> None:
@@ -600,12 +839,15 @@ def page_next() -> None:
 | ✅ 1–4 | Setup, exploration, leakage-safe preprocessing, Linear Regression baseline |
 | ✅ 5 | Decision Tree and Random Forest vs. the baseline |
 | ✅ 6 | Feature engineering: ratios, school-district spatial join, comps from prior sales |
-| 7 | Gradient boosting (XGBoost / LightGBM) with tuning on validation months |
-| 8 | Full error analysis: MAPE / MdAPE by price band and geography |
-| 9–12 | App polish, documentation, final presentation |
+| ✅ 7 | Gradient boosting, tuned on the validation month, compared in the same table |
+| ✅ 8 | Evaluation: MAPE / MdAPE by price band, county, size and age; backtest; significance check |
+| 9 | App polish (this dashboard already covers the Week 9 estimator) |
+| 10 | Documentation: README, re-run instructions |
+| 11–12 | Practice and final presentation, handoff |
 
-**Where the models still struggle:** the most expensive homes (top 20% of prices) have the highest error.
-Gradient boosting and stronger comp features are the next things to try there.
+**Where the models still struggle:** the most expensive homes (top 20% of prices) still have the highest error,
+and there is a small overall bias. See the Evaluation page. Next ideas: weight recent sales more, compare
+like-for-like comps (similar size and age), and score the final model on a fresh month once it's released.
 """
     )
 
@@ -616,6 +858,8 @@ PAGES = {
     "Baseline Results": page_results,
     "Model Comparison": page_models,
     "Feature Engineering": page_features,
+    "Gradient Boosting": page_advanced,
+    "Evaluation": page_evaluation,
     "Price Estimator": page_estimator,
     "What's Next": page_next,
 }
