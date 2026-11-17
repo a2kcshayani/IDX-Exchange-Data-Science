@@ -78,7 +78,6 @@ while lsof -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; do PORT=$((PORT + 1)); do
 URL="http://localhost:$PORT"
 echo
 echo "Starting dashboard at $URL  (press Ctrl+C to stop)"
-echo "The Price Estimator page takes ~15 s the first time while the 350 MB model loads."
 ( sleep 4; open "$URL" 2>/dev/null || true ) &
 # localhost only: the dashboard shows aggregates of confidential IDX data, so keep it off the network.
 exec "$STREAMLIT" run app/app.py --server.port "$PORT" --server.address localhost --server.headless true
